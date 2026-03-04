@@ -1,0 +1,216 @@
+---
+title: "PerfectWorld Sim V2 RMD"
+output: html_document
+date: "2026-03-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("C:/Users/HaightD/OneDrive - Kantar/Documents/Masters/THESIS/CODE")
+
+```
+
+## Explanation of the simple DGP
+
+step 1: creating a function that takes 2 inputs -- how many borrowers / rows to simulate. Default is 5000
+Also setting seed for reproduceability 
+
+----------------------------------------------------------
+
+Step 2: generating features (predictors) for the business world
+
+
+1: root variables
+
+a) firm age: right skewed so using gamma distribution
+b) sector: at the moment it's a coin flip between 0 and 1
+
+2: Chained regression dependencies: each one is determined by the one in front of it -- older firms tend to be larger, larger firms tend to have lower leverage
+
+Plus -- adding randomness
+
+c) log_assets: 
+d) debt to equity:
+e) interest_cov:
+
+
+
+----------------------------------------------------------
+
+Step 3: we have to standardize features for the true model (DGP)
+
+
+- compute and save mean and SD of each variable
+- use those parameters to standardize
+
+We do it manually rather than just calling scale() because later, when you introduce impairments, you need to apply these exact same parameters to the impaired data — if you let the impaired data rescale itself, the impairment shifts the mean/SD and you'd be confounding two effects at once.
+
+
+----------------------------------------------------------
+
+Step 4: 
+Choose the true coefficients that define the world
+
+This is the "ground truth" -- can be confirmed from RR
+All are standardized (change in log-odds per 1 SD increase)
+
+  beta0               <- -3.5   this is the intercept -- should be whatever the default                                  rate is
+  beta_log_assets     <- -0.2   larger firms less likely to default
+  beta_debt_to_equity <-  0.4   higher leverage = higher risk
+  beta_interest_cov   <- -0.3   higher coverage = lower risk
+  beta_sector         <-  0.2   manufacturing slightly riskier
+  beta_firm_age       <- -0.1   older firms slightly safer
+
+
+----------------------------------------------------------
+
+Step 5: convert linear predictors to PDs
+- the "linpred" part -- weighted sum of the predictors
+    - computes the log-odds of default for each borrower
+- pd_true: then after: the logistic transformation so we get the true PDs and not log-odds
+
+----------------------------------------------------------
+
+Step 6: draw observed defaults. (default) 
+For each borrower, draw a default with pd_true value from before
+- borrowers can have same PDs but 2 different outcomes (default or not)
+
+
+and return a list for later
+Data has both raw and scaled versions of every variable
+Scaling = the mean and SD of every predictor so you can apply consistently to the impaired datasets
+Truebetas = ground truth coefficients
+
+----------------------------------------------------------
+
+Then...the end
+
+```{r}
+
+simulate_clean_data_simple <- function(N = 50000, seed = 1) {
+  set.seed(seed)
+
+  # --- 1. Root variables (generated independently) ---
+  firm_age <- rgamma(N, shape = 3, rate = 0.15)   # ~5-40 years, right-skewed
+  sector   <- sample(0:1, N, replace = TRUE)        # 0 = services, 1 = manufacturing
+
+  # --- 2. Chained regression dependencies ---
+  log_assets     <- 8 + 0.03 * firm_age + 0.3 * sector + rnorm(N, 0, 1)
+  debt_to_equity <- pmax(3 - 0.1 * scale(log_assets) - 0.02 * scale(firm_age) +
+                         rgamma(N, shape = 1, rate = 1), 0)
+  interest_cov   <- pmax(5 - 0.4 * scale(debt_to_equity) + 0.3 * scale(log_assets) +
+                         rnorm(N, 0, 1), 0)
+
+  # --- 3. Standardize using clean data parameters (save for later impairment use) ---
+  log_assets_mean     <- mean(log_assets);     log_assets_sd     <- sd(log_assets)
+  debt_to_equity_mean <- mean(debt_to_equity); debt_to_equity_sd <- sd(debt_to_equity)
+  interest_cov_mean   <- mean(interest_cov);   interest_cov_sd   <- sd(interest_cov)
+  firm_age_mean       <- mean(firm_age);       firm_age_sd       <- sd(firm_age)
+
+  log_assets_z     <- (log_assets     - log_assets_mean)     / log_assets_sd
+  debt_to_equity_z <- (debt_to_equity - debt_to_equity_mean) / debt_to_equity_sd
+  interest_cov_z   <- (interest_cov   - interest_cov_mean)   / interest_cov_sd
+  firm_age_z       <- (firm_age       - firm_age_mean)       / firm_age_sd
+
+  # --- 4. True coefficients (all in SD units) ---
+  beta0               <- -3.5   # this is the default rate we should recover
+  beta_log_assets     <- -0.2   # larger firms less likely to default
+  beta_debt_to_equity <-  0.4   # higher leverage = higher risk
+  beta_interest_cov   <- -0.3   # higher coverage = lower risk
+  beta_sector         <-  0.2   # manufacturing slightly riskier
+  beta_firm_age       <- -0.1   # older firms slightly safer
+
+  # --- 5. Default outcome ---
+  linpred <- beta0 +
+    beta_log_assets     * log_assets_z +
+    beta_debt_to_equity * debt_to_equity_z +
+    beta_interest_cov   * interest_cov_z +
+    beta_sector         * sector +
+    beta_firm_age       * firm_age_z
+
+  pd_true <- 1 / (1 + exp(-linpred))
+  default <- rbinom(N, size = 1, prob = pd_true)
+
+  cat("Default rate:", round(mean(default), 3), "\n")
+
+  # --- 6. Return data and scaling parameters ---
+  list(
+    data = data.frame(
+      default, sector,
+      log_assets, debt_to_equity, interest_cov, firm_age,   # raw
+      log_assets_z, debt_to_equity_z, interest_cov_z, firm_age_z,  # scaled
+      pd_true
+    ),
+    scaling = list(
+      log_assets     = c(mean = log_assets_mean,     sd = log_assets_sd),
+      debt_to_equity = c(mean = debt_to_equity_mean, sd = debt_to_equity_sd),
+      interest_cov   = c(mean = interest_cov_mean,   sd = interest_cov_sd),
+      firm_age       = c(mean = firm_age_mean,        sd = firm_age_sd)
+    ),
+    true_betas = c(
+      intercept       = beta0,
+      log_assets      = beta_log_assets,
+      debt_to_equity  = beta_debt_to_equity,
+      interest_cov    = beta_interest_cov,
+      sector          = beta_sector,
+      firm_age        = beta_firm_age
+    )
+  )
+}
+
+
+
+```
+
+## Simulation
+
+This creates one synthetic dataset with 50k rows
+
+And tests the default rate -- should be around 2-5%
+
+
+```{r}
+
+dat <- simulate_clean_data_simple(N = 50000, seed = 123)
+
+result <- simulate_clean_data_simple(N = 50000, seed = 123)
+dat    <- result$data
+
+mean(dat$default)  # default rate sanity check
+```
+
+## Model fit
+
+Fitting a logistic regression -- this is the baseline model
+
+The second one will fit exactly because the coefficients are also scaled
+
+
+
+```{r}
+
+## Model fit
+# Fitting a logistic regression -- this is the baseline model
+# fit1 uses raw inputs, fit2 uses pre-scaled inputs (should recover true betas)
+
+# Raw inputs -- coefficients not directly comparable to true betas
+fit1 <- glm(default ~ log_assets + debt_to_equity + interest_cov + sector + firm_age,
+            data = dat, family = binomial())
+summary(fit1)
+
+# Pre-scaled inputs -- coefficients should recover true betas closely
+fit2 <- glm(default ~ log_assets_z + debt_to_equity_z + interest_cov_z + 
+                      sector + firm_age_z,
+            data = dat, family = binomial())
+summary(fit2)
+
+# Compare estimated vs true betas -- this is your coefficient recovery check
+true_betas <- result$true_betas
+
+recovery <- data.frame(
+  true      = true_betas,
+  estimated = coef(fit2),
+  diff      = coef(fit2) - true_betas
+)
+print(round(recovery, 4))
+
