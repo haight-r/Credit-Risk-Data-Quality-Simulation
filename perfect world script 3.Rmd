@@ -1,5 +1,5 @@
 ---
-title: "PerfectWorld Sim V2 RMD"
+title: "Credit Risk Data Quality Simulation"
 output: html_document
 date: "2026-03-02"
 ---
@@ -10,7 +10,19 @@ setwd("C:/Users/HaightD/OneDrive - Kantar/Documents/Masters/THESIS/CODE")
 
 ```
 
-## Explanation of the simple DGP
+## Part 0: Helper functions and setup
+
+Purpose: Rescale the impaired world with the parameters from the perfect world data
+```{r}
+rescale_with_clean_params <- function(x_impaired, scaling_params) {
+  (x_impaired - scaling_params["mean"]) / scaling_params["sd"]
+}
+```
+
+
+## Part 1: Creating the "Perfect World" with the DGP
+
+# Overview
 
 step 1: creating a function that takes 2 inputs -- how many borrowers / rows to simulate. Default is 5000
 Also setting seed for reproduceability 
@@ -32,7 +44,6 @@ Plus -- adding randomness
 c) log_assets: 
 d) debt to equity:
 e) interest_cov:
-
 
 
 ----------------------------------------------------------
@@ -65,7 +76,7 @@ All are standardized (change in log-odds per 1 SD increase)
 ----------------------------------------------------------
 
 Step 5: convert linear predictors to PDs
-- the "linpred" part -- weighted sum of the predictors
+- the "linpred" part -- weighted sum of the predictors. this is logistic regression
     - computes the log-odds of default for each borrower
 - pd_true: then after: the logistic transformation so we get the true PDs and not log-odds
 
@@ -128,8 +139,8 @@ simulate_clean_data_simple <- function(N = 50000, seed = 1) {
     beta_sector         * sector +
     beta_firm_age       * firm_age_z
 
-  pd_true <- 1 / (1 + exp(-linpred))
-  default <- rbinom(N, size = 1, prob = pd_true)
+  pd_true <- plogis(linpred)   # inverse-logit -- in terms of probabilities
+  default <- rbinom(N, size = 1, prob = pd_true) # the actual outcome
 
   cat("Default rate:", round(mean(default), 3), "\n")
 
@@ -171,7 +182,6 @@ And tests the default rate -- should be around 2-5%
 
 ```{r}
 
-dat <- simulate_clean_data_simple(N = 50000, seed = 123)
 
 result <- simulate_clean_data_simple(N = 50000, seed = 123)
 dat    <- result$data
@@ -188,29 +198,107 @@ The second one will fit exactly because the coefficients are also scaled
 
 
 ```{r}
-
 ## Model fit
 # Fitting a logistic regression -- this is the baseline model
 # fit1 uses raw inputs, fit2 uses pre-scaled inputs (should recover true betas)
 
 # Raw inputs -- coefficients not directly comparable to true betas
-fit1 <- glm(default ~ log_assets + debt_to_equity + interest_cov + sector + firm_age,
+fitcheck_raw <- glm(default ~ log_assets + debt_to_equity + interest_cov + sector + firm_age,
             data = dat, family = binomial())
-summary(fit1)
+summary(fitcheck_raw)
 
 # Pre-scaled inputs -- coefficients should recover true betas closely
-fit2 <- glm(default ~ log_assets_z + debt_to_equity_z + interest_cov_z + 
+fitcheck_scaled <- glm(default ~ log_assets_z + debt_to_equity_z + interest_cov_z + 
                       sector + firm_age_z,
             data = dat, family = binomial())
-summary(fit2)
+summary(fitcheck_scaled)
 
 # Compare estimated vs true betas -- this is your coefficient recovery check
 true_betas <- result$true_betas
 
 recovery <- data.frame(
   true      = true_betas,
-  estimated = coef(fit2),
-  diff      = coef(fit2) - true_betas
+  estimated = coef(fitcheck_scaled),
+  diff      = coef(fitcheck_scaled) - true_betas
 )
 print(round(recovery, 4))
+```
+
+*** Here: add Igl score for the clean dataset
+
+```{r}
+
+```
+
+
+
+##Part 2: Data Impairment
+
+**Impairment 1: MCAR**
+
+Explanation of what happens in this function and why:
+
+
+```{r}
+impair_mcar <- function(dat, scaling, severity = "mild") {
+  
+  # Realistic placeholder severity levels
+  # Mild: ~5-10% missing, Severe: ~25-30% missing
+  miss_prob <- switch(severity,
+    mild   = 0.08,
+    severe = 0.28
+  )
+  
+  dat_impaired <- dat
+  n <- nrow(dat)
+  
+  # Apply MCAR to financial ratio columns only
+  # (sector and firm_age are typically always observed)
+  financial_vars <- c("log_assets", "debt_to_equity", "interest_cov")
+  
+  for (var in financial_vars) {
+    
+    # Introduce missingness completely at random
+    missing_idx <- rbinom(n, 1, prob = miss_prob) == 1
+    dat_impaired[[var]][missing_idx] <- NA
+    
+    # Placeholder imputation: clean mean (will be swapped out later)
+    clean_mean <- scaling[[var]]["mean"]
+    dat_impaired[[var]][is.na(dat_impaired[[var]])] <- clean_mean
+    
+    # Rescale using clean parameters
+    dat_impaired[[paste0(var, "_z")]] <- rescale_with_clean_params(
+      dat_impaired[[var]],
+      scaling[[var]]
+    )
+  }
+  
+  # Track what was impaired for later evaluation
+  attr(dat_impaired, "impairment") <- list(
+    type      = "MCAR",
+    severity  = severity,
+    miss_prob = miss_prob,
+    vars      = financial_vars
+  )
+  
+  dat_impaired
+}
+
+
+```
+
+Running the MCAR function to create "mild" and "severe" impaired data
+
+```{r}
+
+result <- simulate_clean_data_simple(N = 50000, seed = 123)
+dat    <- result$data
+
+dat_mcar_mild   <- impair_mcar(dat, result$scaling, severity = "mild")
+dat_mcar_severe <- impair_mcar(dat, result$scaling, severity = "severe")
+
+
+```
+
+
 
