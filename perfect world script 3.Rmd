@@ -13,10 +13,19 @@ setwd("C:/Users/HaightD/OneDrive - Kantar/Documents/Masters/THESIS/CODE")
 ## Part 0: Helper functions and setup
 
 Purpose: Rescale the impaired world with the parameters from the perfect world data
+The second function is for the Noise impairment. It rescales the mean only because noise will blow up the variance, don't want to recorrect that
+And we don't want any rescaling for implausible values
 ```{r}
-rescale_with_clean_params <- function(x_impaired, scaling_params) {
-  (x_impaired - scaling_params["mean"]) / scaling_params["sd"]
+  rescale_with_clean_params <- function(x_impaired, scaling_params) {
+    (x_impaired - scaling_params["mean"]) / scaling_params["sd"]
+  }
+
+# for random noise only
+rescale_mean_only <- function(x_impaired, scaling_params) {
+  x_impaired - scaling_params["mean"]
 }
+
+
 ```
 
 
@@ -224,7 +233,7 @@ recovery <- data.frame(
 print(round(recovery, 4))
 ```
 
-*** Here: add Igl score for the clean dataset
+*** Here: add Igl scores for the clean dataset
 
 ```{r}
 
@@ -236,7 +245,7 @@ print(round(recovery, 4))
 
 **Impairment 1: MCAR**
 
-Explanation of what happens in this function and why:
+Explanation of what happens in this function:
 
 - first: define function and its three inputs (clean data, scaling parameters, severity with default as "mild" if we don't specify
 - switch: mapping mild to 0.08 and severe to .28
@@ -314,9 +323,18 @@ dat_mcar_severe <- impair_mcar(dat, result$scaling, severity = "severe")
 
 **Impairment 2: MNAR**
 
-Due to older firms not reporting. This is subject to change
+Due to older firms not reporting. This is subject to change.
+MNAR because whether a value is missing depends on an observed variable (here = firm_age)
 
-Explanation of what happens in this function and why:
+Explanation of what happens in this function:
+- first: taking in data, scaling from clean variables, severity
+- (-3.5) / (-1.5) are the log-odds of missingness (intercept) when firm_age =  0
+      (tuned until the average missing rate across simulated firms is ~8% or 28%)
+- Plogis(): each firm gets its own missing probability based on its age
+- Check for the average of all indiv. probabilities (8% / 28%)
+- Applying missingness: rbinom flips a weighted coin for each firm using their probability made above
+    Result: when something gets set to 1, then it becomes an "NA"
+- Rescale with clean parameters (mean and SD), tag with metadata
 
 
 ```{r}
@@ -381,12 +399,21 @@ dat_mnar_mild   <- impair_mnar(dat, result$scaling, severity = "mild")
 dat_mnar_severe <- impair_mnar(dat, result$scaling, severity = "severe")
 
 
-
 ```
 
 **Impairment 3: Measurement Noise**
 
 What is happening here:
+- our function takes in clean data, scaling data, and which severity (defaulted to "mild")
+- Switch: maps severity string (above) to a number
+- Mild at the moment: will have an extra SD 10% of the clean variable's SD -- severe is 50%. subject to change!!
+- Save a new copy and save the sample size in n
+- Designating only a few "noise variables" (firm size not getting noise - confirm)
+- Cycling through all the variables: pull the clean SD from "scaling", generate N draws from a normal distribution centered around zero. Adding to each variable * multiplier for mild / severe
+- Print impairment per variable 
+- rescale using clean parameters -- isolating impairment effect from any scale effect. difference in model performance is due to nature of impairment
+- metadata tag on the new dataframe
+
 
 ```{r}
 
@@ -414,7 +441,7 @@ impair_noise <- function(dat, scaling, severity = "mild") {
     dat_impaired[[v]] <- dat_impaired[[v]] + noise
   }
   
-  # Sanity check: print SD inflation per variable so you can verify severity
+  # Print SD inflation per variable so you can verify severity
   for (v in noise_vars) {
     cat(sprintf("Noise SD for %s: %.4f (%.0f%% of clean SD = %.4f)\n",
       v,
@@ -424,14 +451,14 @@ impair_noise <- function(dat, scaling, severity = "mild") {
     ))
   }
   
-  # Rescale using clean parameters
-  for (v in noise_vars) {
-    z_name <- paste0(v, "_z")
-    dat_impaired[[z_name]] <- rescale_with_clean_params(
-      dat_impaired[[v]],
-      scaling[[v]]
-    )
-  }
+  # Rescale using clean parameters for MEAN ONLY
+for (v in noise_vars) {
+  z_name <- paste0(v, "_z")
+  dat_impaired[[z_name]] <- rescale_mean_only(
+    dat_impaired[[v]],
+    scaling[[v]]
+  )
+}
   
   # Tag with metadata
   attr(dat_impaired, "impairment") <- list(
@@ -447,10 +474,187 @@ impair_noise <- function(dat, scaling, severity = "mild") {
 ```
 
 
+Creating the actual datasets
 ```{r}
 
 dat_noise_mild   <- impair_noise(dat, result$scaling, severity = "mild")
 dat_noise_severe <- impair_noise(dat, result$scaling, severity = "severe")
+
+```
+**Impairment 4: Implausible Values**
+
+What is happening:
+- Taking same inputs of clean data, scaling, severity
+- Saving new copy, taking number of rows
+- Defining what it means to be "implausible": for log_assets and interest_cov this is being 6 SD away
+- Debt to equity / firm_age get invalid values (edit later)
+- Inject the values: sample picks rows randomly. (floor = for a whole number). The rows get their values replaced with implausible values
+- sprintf template:
+    It fills in left to right:
+      - `%s` ← `v` (e.g. `"log_assets"`)
+      - `%d` ← `length(corrupt_idx)` (e.g. `50`)
+      - `%.0f` ← `corrupt_rate * 100` (e.g. `5`)
+      - `%.2f` ← `implausible_values[[v]]` (e.g. `12.34`)
+- rescale (mean and sd (??))
+
+
+
+```{r}
+
+impair_implausible <- function(dat, scaling, severity = "mild") {
+  
+  # Implausible values: replace a random subset of rows with domain-invalid
+  # or extreme outlier values, depending on the variable
+  # Severity controls the % of rows corrupted
+  # PLACEHOLDER rates — to be confirmed with company supervisors
+  corrupt_rate <- switch(severity,
+    mild   = 0.05,  # 5% of rows corrupted
+    severe = 0.15   # 15% of rows corrupted
+  )
+  
+  dat_impaired <- dat
+  n <- nrow(dat)
+  
+  # --- Define implausible value per variable ---
+  # PLACEHOLDER definitions — swap these out once company confirms benchmarks
+  implausible_values <- list(
+    log_assets     = mean(dat$log_assets) + 6 * sd(dat$log_assets),  # extreme high outlier
+    debt_to_equity = -1,                                               # domain-invalid: negative
+    interest_cov   = mean(dat$interest_cov) + 6 * sd(dat$interest_cov), # extreme high outlier
+    firm_age       = -10                                               # domain-invalid: negative age
+  )
+  
+  implausible_vars <- names(implausible_values)
+  
+  # --- Inject implausible values ---
+  for (v in implausible_vars) {
+    corrupt_idx <- sample(n, size = floor(corrupt_rate * n), replace = FALSE)
+    dat_impaired[[v]][corrupt_idx] <- implausible_values[[v]]
+    cat(sprintf("Implausible values injected in %s: %d rows (%.0f%%), value = %.2f\n",
+      v,
+      length(corrupt_idx),
+      corrupt_rate * 100,
+      implausible_values[[v]]
+    ))
+  }
+  
+  # No rescaling — implausible values are intended to distort the variable's
+  # distribution. Rescaling would compress the damage and understate the impairment effect.
+  
+  # Tag with metadata
+  attr(dat_impaired, "impairment") <- list(
+    type         = "implausible",
+    severity     = severity,
+    corrupt_rate = corrupt_rate,
+    vars         = implausible_vars
+  )
+  
+  dat_impaired
+}
+
+
+```
+
+Creating the datasets
+```{r}
+
+dat_impl_mild   <- impair_implausible(dat, result$scaling, severity = "mild")
+dat_impl_severe <- impair_implausible(dat, result$scaling, severity = "severe")
+
+
+```
+
+**Doublechecking the functions**
+
+```{r}
+
+# ── Sanity Checks: All Impairment Functions ────────────────────────────────
+
+# Assumes the following objects exist in your environment:
+# dat                                        (clean data)
+# dat_mcar_mild,    dat_mcar_severe
+# dat_mnar_mild,    dat_mnar_severe
+# dat_noise_mild,   dat_noise_severe
+# dat_impl_mild,    dat_impl_severe
+# scaling <- attr(dat, "scaling")
+
+scaling <- attr(dat, "scaling")
+
+# ── 1. Missing rates (MCAR & MNAR) ────────────────────────────────────────
+
+cat("=== Missing Rates ===\n")
+cat("MCAR mild:  ", round(mean(is.na(dat_mcar_mild$interest_cov)), 3),  "\n")
+cat("MCAR severe:", round(mean(is.na(dat_mcar_severe$interest_cov)), 3), "\n")
+cat("MNAR mild:  ", round(mean(is.na(dat_mnar_mild$interest_cov)), 3),  "\n")
+cat("MNAR severe:", round(mean(is.na(dat_mnar_severe$interest_cov)), 3), "\n")
+
+# ── 2. MNAR missingness increases with firm age ────────────────────────────
+
+cat("\n=== MNAR: Missing Rate by Firm Age Quartile ===\n")
+age_bins <- cut(dat$firm_age, breaks = 4)
+
+cat("Mild:\n")
+print(round(tapply(is.na(dat_mnar_mild$interest_cov), age_bins, mean), 3))
+
+cat("Severe:\n")
+print(round(tapply(is.na(dat_mnar_severe$interest_cov), age_bins, mean), 3))
+
+# ── 3. Noise inflated SD ──────────────────────────────────────────────────
+
+cat("\n=== Noise: SD Before and After ===\n")
+noise_vars <- c("log_assets", "debt_to_equity", "interest_cov")
+
+for (v in noise_vars) {
+  cat(sprintf("%-20s clean SD: %.4f | mild SD: %.4f | severe SD: %.4f\n",
+    v,
+    sd(dat[[v]]),
+    sd(dat_noise_mild[[v]]),
+    sd(dat_noise_severe[[v]])
+  ))
+}
+
+# ── 4. Implausible values are present ─────────────────────────────────────
+
+cat("\n=== Implausible: Summary of Affected Variables ===\n")
+impl_vars <- c("log_assets", "debt_to_equity", "interest_cov", "firm_age")
+
+for (v in impl_vars) {
+  cat(sprintf("\n%s:\n", v))
+  cat("  mild max:  ", round(max(dat_impl_mild[[v]]),  2), "\n")
+  cat("  severe max:", round(max(dat_impl_severe[[v]]), 2), "\n")
+}
+
+# Domain-invalid checks
+cat("\nNegative debt_to_equity — mild: ",
+  round(mean(dat_impl_mild$debt_to_equity < 0), 3),  
+  "| severe:", 
+  round(mean(dat_impl_severe$debt_to_equity < 0), 3), "\n")
+
+cat("Negative firm_age — mild: ",
+  round(mean(dat_impl_mild$firm_age < 0), 3),  
+  "| severe:", 
+  round(mean(dat_impl_severe$firm_age < 0), 3), "\n")
+
+# ── 5. Visual distributions ───────────────────────────────────────────────
+
+par(mfrow = c(3, 3), mar = c(4, 4, 2, 1))
+
+for (v in c("log_assets", "debt_to_equity", "interest_cov")) {
+  hist(dat[[v]],            main = paste("Clean -", v),       xlab = v, col = "grey90")
+  hist(dat_noise_mild[[v]], main = paste("Noise mild -", v),  xlab = v, col = "lightblue")
+  hist(dat_impl_mild[[v]],  main = paste("Implaus mild -", v), xlab = v, col = "lightyellow")
+}
+
+# ── 6. Metadata tags ──────────────────────────────────────────────────────
+
+cat("\n=== Metadata Tags ===\n")
+for (nm in c("dat_mcar_mild", "dat_mcar_severe",
+             "dat_mnar_mild", "dat_mnar_severe",
+             "dat_noise_mild", "dat_noise_severe",
+             "dat_impl_mild", "dat_impl_severe")) {
+  cat(nm, "→ type:", attr(get(nm), "impairment")$type,
+      "| severity:", attr(get(nm), "impairment")$severity, "\n")
+}
 
 ```
 
