@@ -186,7 +186,7 @@ And tests the default rate -- should be around 2-5%
 result <- simulate_clean_data_simple(N = 50000, seed = 123)
 dat    <- result$data
 
-mean(dat$default)  # default rate sanity check
+mean(dat$default)  # default rate check - should be near the "truth"
 ```
 
 ## Model fit
@@ -200,7 +200,7 @@ The second one will fit exactly because the coefficients are also scaled
 ```{r}
 ## Model fit
 # Fitting a logistic regression -- this is the baseline model
-# fit1 uses raw inputs, fit2 uses pre-scaled inputs (should recover true betas)
+# fitcheck_raw uses raw inputs, fitcheck_scaled uses pre-scaled inputs (should recover true betas)
 
 # Raw inputs -- coefficients not directly comparable to true betas
 fitcheck_raw <- glm(default ~ log_assets + debt_to_equity + interest_cov + sector + firm_age,
@@ -237,6 +237,17 @@ print(round(recovery, 4))
 **Impairment 1: MCAR**
 
 Explanation of what happens in this function and why:
+
+- first: define function and its three inputs (clean data, scaling parameters, severity with default as "mild" if we don't specify
+- switch: mapping mild to 0.08 and severe to .28
+- make a copy of the clean dataset to work on
+- identify the inancial variables that will get missingness  / apply same impairment logic to each one
+- actual mcar mechanism. flip a weighted coin for each of the n firms — it returns 1 (missing) with probability miss_prob and 0 (observed) with probability 1 - miss_prob. The == 1 converts that into a logical vector of TRUE/FALSE, where TRUE means that firm's value will be set to missing. Every firm has exactly the same probability of being missing regardless of anything else about them — that's what makes it MCAR.
+- where "missing idx" is true (1), replace with NAs
+- for now: mean imputation with the scaling clean mean
+- rescale
+- metadata: attaching tags to an object without making columns in a dataframe
+- return the impaired dataset
 
 
 ```{r}
@@ -300,5 +311,147 @@ dat_mcar_severe <- impair_mcar(dat, result$scaling, severity = "severe")
 
 ```
 
+
+**Impairment 2: MNAR**
+
+Due to older firms not reporting. This is subject to change
+
+Explanation of what happens in this function and why:
+
+
+```{r}
+
+impair_mnar <- function(dat, scaling, severity = "mild") {
+  
+  # MNAR: older firms less likely to report interest_cov
+  # missingness probability is driven by firm_age
+  # mild: ~8% average missing, severe: ~28% average missing
+  # (matches MCAR rates intentionally so comparisons are fair)
+  mnar_intercept <- switch(severity,
+    mild   = -3.5,
+    severe = -1.5
+  )
+  
+  dat_impaired <- dat
+  n <- nrow(dat)
+  
+  # Missingness probability increases with firm age
+  prob_missing <- plogis(mnar_intercept + 0.05 * dat$firm_age)
+  
+  # Sanity check: print average missing rate so you can verify severity
+  cat("Average MNAR missing rate:", round(mean(prob_missing), 3), "\n")
+  
+  # Introduce missingness in interest_cov only
+  # (this is the variable most plausibly linked to firm age in your DGP)
+  missing_idx <- rbinom(n, 1, prob = prob_missing) == 1
+  dat_impaired$interest_cov[missing_idx] <- NA
+  
+  # Placeholder imputation: clean mean (will be swapped out later)
+  clean_mean <- scaling$interest_cov["mean"]
+  dat_impaired$interest_cov[is.na(dat_impaired$interest_cov)] <- clean_mean
+  
+  # Rescale using clean parameters
+  dat_impaired$interest_cov_z <- rescale_with_clean_params(
+    dat_impaired$interest_cov,
+    scaling$interest_cov
+  )
+  
+  # Tag with metadata
+  attr(dat_impaired, "impairment") <- list(
+    type             = "MNAR",
+    severity         = severity,
+    mnar_intercept   = mnar_intercept,
+    avg_miss_rate    = mean(prob_missing),
+    driven_by        = "firm_age",
+    vars             = "interest_cov"
+  )
+  
+  dat_impaired
+}
+
+
+```
+
+Running MNAR function to create mild / severe impaired data
+
+
+```{r}
+
+dat_mnar_mild   <- impair_mnar(dat, result$scaling, severity = "mild")
+dat_mnar_severe <- impair_mnar(dat, result$scaling, severity = "severe")
+
+
+
+```
+
+**Impairment 3: Measurement Noise**
+
+What is happening here:
+
+```{r}
+
+impair_noise <- function(dat, scaling, severity = "mild") {
+  
+  # Measurement noise: Gaussian noise added to continuous financial predictors
+  # Severity defined as % of each variable's clean SD
+  # mild: SD_noise = 10% of clean SD, severe: SD_noise = 50% of clean SD
+  noise_sd_multiplier <- switch(severity,
+    mild   = 0.10,
+    severe = 0.50
+  )
+  
+  dat_impaired <- dat
+  n <- nrow(dat)
+  
+  # Variables to corrupt — continuous financial predictors only
+  # (firm_age excluded: it drives MNAR so corrupting it would confound comparisons)
+  # (sector excluded: categorical)
+  noise_vars <- c("log_assets", "debt_to_equity", "interest_cov")
+  
+  for (v in noise_vars) {
+    clean_sd   <- scaling[[v]]["sd"]
+    noise      <- rnorm(n, mean = 0, sd = noise_sd_multiplier * clean_sd)
+    dat_impaired[[v]] <- dat_impaired[[v]] + noise
+  }
+  
+  # Sanity check: print SD inflation per variable so you can verify severity
+  for (v in noise_vars) {
+    cat(sprintf("Noise SD for %s: %.4f (%.0f%% of clean SD = %.4f)\n",
+      v,
+      noise_sd_multiplier * scaling[[v]]["sd"],
+      noise_sd_multiplier * 100,
+      scaling[[v]]["sd"]
+    ))
+  }
+  
+  # Rescale using clean parameters
+  for (v in noise_vars) {
+    z_name <- paste0(v, "_z")
+    dat_impaired[[z_name]] <- rescale_with_clean_params(
+      dat_impaired[[v]],
+      scaling[[v]]
+    )
+  }
+  
+  # Tag with metadata
+  attr(dat_impaired, "impairment") <- list(
+    type               = "noise",
+    severity           = severity,
+    noise_sd_multiplier = noise_sd_multiplier,
+    vars               = noise_vars
+  )
+  
+  dat_impaired
+}
+
+```
+
+
+```{r}
+
+dat_noise_mild   <- impair_noise(dat, result$scaling, severity = "mild")
+dat_noise_severe <- impair_noise(dat, result$scaling, severity = "severe")
+
+```
 
 
