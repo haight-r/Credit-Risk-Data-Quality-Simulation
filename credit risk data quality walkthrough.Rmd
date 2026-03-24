@@ -36,6 +36,8 @@ rescale_mean_only <- function(x_impaired, scaling_params) {
 step 1: creating a function that takes inputs re: how many firms to simulate, terms of the loan, the drift of the SD (random walk time series). The default values are fine. 
 Also setting seed for reproduceability 
 
+
+
 ----------------------------------------------------------
 
 Step 2: generating features (predictors) for the business world
@@ -82,6 +84,17 @@ All are standardized (change in log-odds per 1 SD increase)
   beta_interest_cov   <- -0.3   higher coverage = lower risk
   beta_sector         <-  0.2   manufacturing slightly riskier
   beta_firm_age       <- -0.1   older firms slightly safer
+
+----------------------------------------------------------
+NEW: 
+
+conversion to panel data!
+
+inner and outer loop -- creating firms that either stay the same over time, get worse, or improve...
+default or not
+over 3-7 year loan periods
+
+Then rows are bound together
 
 
 ----------------------------------------------------------
@@ -250,7 +263,7 @@ simulate_clean_data_panel <- function(N = 5000, seed = 1,
       # --- 3d. Seasoning period: no defaults allowed in early years ---
       # Firms must survive at least `seasoning_period` years before they
       # are eligible to default. This reflects real credit portfolio
-      # behaviour and ensures the deterioration mechanism has time to act.
+      # behavior and ensures the deterioration mechanism has time to act.
       if (t <= seasoning_period) {
         default <- 0L
       } else {
@@ -360,9 +373,9 @@ simulate_clean_data_panel <- function(N = 5000, seed = 1,
 
 ## Simulation
 
-This creates one synthetic dataset with 50k rows
+This creates one synthetic dataset with 5000 businesses / around 20k rows
 
-And tests the default rate -- should be around 2-5%
+And tests the default rate -- should be around 1-5%
 
 
 ```{r}
@@ -421,6 +434,11 @@ print(round(recovery, 4))
 *** Here: add Igl scores for the clean dataset
 
 ```{r}
+
+
+source("compute_frs.R")
+
+
 
 ```
 
