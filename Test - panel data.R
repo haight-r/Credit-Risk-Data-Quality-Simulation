@@ -1,3 +1,4 @@
+## DO NOT EDIT - this feature is already implemented in the main RMD 
 
 # Creating panel data
 
