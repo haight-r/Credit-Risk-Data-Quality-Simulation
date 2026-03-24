@@ -1,0 +1,929 @@
+---
+title: "Credit Risk Data Quality Simulation"
+output: html_document
+date: "2026-03-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+## Part 0: Helper functions and setup --> put this in another script!!
+
+Purpose: Rescale the impaired world with the parameters from the perfect world data
+The second function is for the Noise impairment. It rescales the mean only because noise will blow up the variance, don't want to recorrect that
+And we don't want any rescaling for implausible values
+```{r}
+rescale_with_clean_params <- function(x_impaired, scaling_params) {
+    (x_impaired - scaling_params["mean"]) / scaling_params["sd"]
+  }
+
+# for random noise only
+rescale_mean_only <- function(x_impaired, scaling_params) {
+  x_impaired - scaling_params["mean"]
+}
+
+# implausible values doesn't get rescaled
+
+```
+
+
+## Part 1: Creating the "Perfect World" with the DGP
+
+# Overview
+
+step 1: creating a function that takes inputs re: how many firms to simulate, terms of the loan, the drift of the SD (random walk time series). The default values are fine. 
+Also setting seed for reproduceability 
+
+----------------------------------------------------------
+
+Step 2: generating features (predictors) for the business world
+
+
+1: root variables
+
+a) firm age: right skewed so using gamma distribution
+b) sector: at the moment it's a coin flip between 0 and 1
+
+2: Chained regression dependencies: each one is determined by the one in front of it -- older firms tend to be larger, larger firms tend to have lower leverage
+
+Plus -- adding randomness
+
+These are just tests at the moment
+
+c) log_assets: proxy for firm size, dependent on age and sector
+d) debt to equity: higher leverage is more dangerous --> dependent on how big the firm is and how old it is
+e) interest_cov: proxy for cash flow 
+
+
+----------------------------------------------------------
+
+Step 3: we have to standardize features for the true model (DGP)
+
+
+- compute and save mean and SD of each variable
+- use those parameters to standardize
+
+We do it manually rather than just calling scale() because later, when you introduce impairments, you need to apply these exact same parameters to the impaired data — if you let the impaired data rescale itself, the impairment shifts the mean/SD and you'd be confounding two effects at once.
+
+
+----------------------------------------------------------
+
+Step 4: 
+Choose the true coefficients that define the world
+
+This is the "ground truth" -- can be confirmed from RR
+All are standardized (change in log-odds per 1 SD increase)
+
+  beta0               <- -3.5   this is the intercept -- should be whatever the default                                  rate is
+  beta_log_assets     <- -0.2   larger firms less likely to default
+  beta_debt_to_equity <-  0.4   higher leverage = higher risk
+  beta_interest_cov   <- -0.3   higher coverage = lower risk
+  beta_sector         <-  0.2   manufacturing slightly riskier
+  beta_firm_age       <- -0.1   older firms slightly safer
+
+
+----------------------------------------------------------
+
+Step 5: convert linear predictors to PDs
+- the "linpred" part -- weighted sum of the predictors. this is logistic regression
+    - computes the log-odds of default for each borrower
+- pd_true: then after: the logistic transformation so we get the true PDs and not log-odds
+
+----------------------------------------------------------
+
+Step 6: draw observed defaults. (default) 
+For each borrower, draw a default with pd_true value from before
+- borrowers can have same PDs but 2 different outcomes (default or not)
+
+
+and return a list for later
+Data has both raw and scaled versions of every variable
+Scaling = the mean and SD of every predictor so you can apply consistently to the impaired datasets
+Truebetas = ground truth coefficients
+
+----------------------------------------------------------
+
+Then...the end
+
+```{r}
+
+
+# Creating panel data
+
+# have an inner loop that simulates years / data for one business
+# and an outer loop that simulates for multiple businesses
+
+##########################################
+
+simulate_clean_data_panel <- function(N = 5000, seed = 1,
+                                      min_term = 3, max_term = 7,
+                                      drift_sd_log_assets     = 0.05,
+                                      drift_sd_debt_to_equity = 0.03,
+                                      drift_sd_interest_cov   = 0.03,
+                                      drift_scale             = 0.3,
+                                      seasoning_period        = 1) {
+  set.seed(seed)
+  
+  # ============================================================
+  # PHASE 1: FIRM ORIGINATION
+  # ============================================================
+  
+  firm_age_orig <- rgamma(N, shape = 3, rate = 0.15)
+  sector        <- sample(0:1, N, replace = TRUE)
+  
+  log_assets_orig     <- 8 + 0.03 * firm_age_orig + 0.3 * sector + rnorm(N, 0, 1) # log bc very right-skewed
+  debt_to_equity_orig <- pmax(3 - 0.1 * scale(log_assets_orig) - 0.02 * scale(firm_age_orig) +
+                                rgamma(N, shape = 1, rate = 1), 0)
+  interest_cov_orig   <- pmax(5 - 0.4 * scale(debt_to_equity_orig) + 0.3 * scale(log_assets_orig) +
+                                rnorm(N, 0, 1), 0)
+  
+  log_assets_mean     <- mean(log_assets_orig);     log_assets_sd     <- sd(log_assets_orig)
+  debt_to_equity_mean <- mean(debt_to_equity_orig); debt_to_equity_sd <- sd(debt_to_equity_orig)
+  interest_cov_mean   <- mean(interest_cov_orig);   interest_cov_sd   <- sd(interest_cov_orig)
+  firm_age_mean       <- mean(firm_age_orig);       firm_age_sd       <- sd(firm_age_orig)
+  
+  firm_id      <- sprintf("FIRM_%05d", seq_len(N))
+  vintage_year <- sample(2005:2025, N, replace = TRUE)
+  loan_term    <- sample(min_term:max_term, N, replace = TRUE)
+  
+  # Firm trajectory type: assigned once at origination, fixed for the firm's lifetime.
+  # Determines the direction of the drift mean in the annual random walk.
+  # Deteriorating firms face state-dependent worsening (as before).
+  # Stable firms follow a pure random walk with zero drift mean.
+  # Improving firms experience a gentle drift in the opposite direction --
+  # leverage falls slowly, coverage and assets improve.
+  # Proportions (0.2 / 0.6 / 0.2) reflect a realistic credit portfolio
+  # where most firms are broadly stable and distressed/improving firms are minorities.
+  trajectory <- sample(c("deteriorating", "stable", "improving"),
+                       N, replace = TRUE, prob = c(0.2, 0.6, 0.2))
+  
+  # ============================================================
+  # PHASE 2: TRUE COEFFICIENTS
+  # beta0 lowered from -3.5 to -4.2 to reduce the annual default
+  # probability, giving firms runway to deteriorate before defaulting
+  # rather than exiting immediately at origination.
+  # ============================================================
+  
+  beta0               <- -4.2
+  beta_log_assets     <- -0.2
+  beta_debt_to_equity <-  0.4
+  beta_interest_cov   <- -0.3
+  beta_sector         <-  0.2
+  beta_firm_age       <- -0.1
+  
+  # ============================================================
+  # PHASE 3: PANEL EXPANSION
+  # ============================================================
+  
+  rows <- vector("list", N)
+  
+  for (i in seq_len(N)) {
+    
+    la  <- log_assets_orig[i]
+    dte <- debt_to_equity_orig[i]
+    ic  <- interest_cov_orig[i]
+    fa  <- firm_age_orig[i]
+    
+    firm_rows <- vector("list", loan_term[i])
+    
+    for (t in seq_len(loan_term[i])) {
+      
+      # --- 3a. State-dependent drift from year 2 onward ---
+      if (t > 1) {
+        
+        # Standardize current values to compute pd_curr as deterioration weight
+        la_z_curr  <- (la  - log_assets_mean)     / log_assets_sd
+        dte_z_curr <- (dte - debt_to_equity_mean) / debt_to_equity_sd
+        ic_z_curr  <- (ic  - interest_cov_mean)   / interest_cov_sd
+        fa_z_curr  <- (fa  - firm_age_mean)        / firm_age_sd
+        
+        pd_curr <- plogis(beta0 +
+                            beta_log_assets     * la_z_curr +
+                            beta_debt_to_equity * dte_z_curr +
+                            beta_interest_cov   * ic_z_curr +
+                            beta_sector         * sector[i] +
+                            beta_firm_age       * fa_z_curr)
+        
+        # Drift means are determined by trajectory type.
+        # Deteriorating: state-dependent push toward worse financials, scaled by pd_curr.
+        # Stable: pure random walk, drift mean = 0 for all variables.
+        # Improving: gentle fixed drift in the positive direction, independent of pd_curr.
+        #   A fixed (not state-dependent) improvement rate reflects firms that are
+        #   genuinely deleveraging or growing, rather than just getting lucky.
+        if (trajectory[i] == "deteriorating") {
+          drift_mean_dte <- +drift_scale * pd_curr
+          drift_mean_ic  <- -drift_scale * pd_curr
+          drift_mean_la  <- -drift_scale * 0.5 * pd_curr
+        } else if (trajectory[i] == "stable") {
+          drift_mean_dte <- 0
+          drift_mean_ic  <- 0
+          drift_mean_la  <- 0
+        } else {  # improving
+          drift_mean_dte <- -drift_scale * 0.5   # leverage slowly falls
+          drift_mean_ic  <-  drift_scale * 0.5   # coverage slowly rises
+          drift_mean_la  <-  drift_scale * 0.25  # assets grow modestly
+        }
+        
+        dte <- pmax(dte + rnorm(1, mean = drift_mean_dte, sd = drift_sd_debt_to_equity), 0)
+        ic  <- pmax(ic  + rnorm(1, mean = drift_mean_ic,  sd = drift_sd_interest_cov),   0)
+        la  <-      la  + rnorm(1, mean = drift_mean_la,  sd = drift_sd_log_assets)
+        fa  <- fa + 1
+      }
+      
+      # --- 3b. Standardize using origination-year scaling parameters ---
+      la_z  <- (la  - log_assets_mean)     / log_assets_sd
+      dte_z <- (dte - debt_to_equity_mean) / debt_to_equity_sd
+      ic_z  <- (ic  - interest_cov_mean)   / interest_cov_sd
+      fa_z  <- (fa  - firm_age_mean)        / firm_age_sd
+      
+      # --- 3c. Compute default probability and draw outcome ---
+      linpred <- beta0 +
+        beta_log_assets     * la_z  +
+        beta_debt_to_equity * dte_z +
+        beta_interest_cov   * ic_z  +
+        beta_sector         * sector[i] +
+        beta_firm_age       * fa_z
+      pd_true <- plogis(linpred)
+      
+      # --- 3d. Seasoning period: no defaults allowed in early years ---
+      # Firms must survive at least `seasoning_period` years before they
+      # are eligible to default. This reflects real credit portfolio
+      # behaviour and ensures the deterioration mechanism has time to act.
+      if (t <= seasoning_period) {
+        default <- 0L
+      } else {
+        default <- rbinom(1, size = 1, prob = pd_true)
+      }
+      
+      repaid <- as.integer(!default & t == loan_term[i])
+      
+      # --- 3e. Store this firm-year row ---
+      firm_rows[[t]] <- data.frame(
+        firm_id          = firm_id[i],
+        vintage_year     = vintage_year[i],
+        obs_year         = vintage_year[i] + t - 1,
+        years_on_book    = t,
+        sector           = sector[i],
+        loan_term        = loan_term[i],
+        trajectory       = trajectory[i],        # added
+        log_assets       = la,
+        debt_to_equity   = dte,
+        interest_cov     = ic,
+        firm_age         = fa,
+        log_assets_z     = la_z,
+        debt_to_equity_z = dte_z,
+        interest_cov_z   = ic_z,
+        firm_age_z       = fa_z,
+        pd_true          = pd_true,
+        default          = default,
+        repaid           = repaid
+      )
+      
+      if (default == 1L) {
+        firm_rows <- firm_rows[seq_len(t)]
+        break
+      }
+    }
+    
+    rows[[i]] <- do.call(rbind, firm_rows)
+  }
+  
+  panel <- do.call(rbind, rows)
+  
+  # ============================================================
+  # PHASE 4: REPORTING
+  # ============================================================
+  
+  n_rows      <- nrow(panel)
+  n_defaulted <- sum(panel$default)
+  n_repaid    <- length(unique(panel$firm_id[panel$repaid == 1]))
+  
+  cat("Firms simulated:       ", N, "\n")
+  cat("Total firm-year rows:  ", n_rows, "\n")
+  cat("Default events:        ", n_defaulted,
+      sprintf("(%.1f%% of firm-years)\n", 100 * n_defaulted / n_rows))
+  cat("Firms repaid:          ", n_repaid, "\n")
+  cat("Obs year range:        ", min(panel$obs_year), "to", max(panel$obs_year), "\n")
+  
+  # --- Deterioration diagnostic ---
+  # For firms that defaulted, compare mean pd_true in their first observed
+  # year vs their final (default) year. A healthy gap confirms the drift
+  # mechanism is doing its job before exit.
+  defaulted_firms <- panel[panel$default == 1, "firm_id"]
+  defaulter_panel <- panel[panel$firm_id %in% defaulted_firms, ]
+  
+  pd_trajectory <- do.call(rbind, lapply(
+    split(defaulter_panel, defaulter_panel$firm_id),
+    function(df) {
+      df_sorted <- df[order(df$years_on_book), ]
+      data.frame(pd_year1 = df_sorted$pd_true[1],
+                 pd_final = df_sorted$pd_true[nrow(df_sorted)])
+    }
+  ))
+  
+  cat("\n--- Deterioration diagnostic (defaulting firms only) ---\n")
+  cat("Mean pd_true year 1:  ", round(mean(pd_trajectory$pd_year1), 4), "\n")
+  cat("Mean pd_true final:   ", round(mean(pd_trajectory$pd_final), 4), "\n")
+  cat("Mean years observed:  ",
+      round(mean(tapply(defaulter_panel$firm_id, defaulter_panel$firm_id, length)), 2), "\n")
+  
+  # ============================================================
+  # PHASE 5: RETURN
+  # ============================================================
+  
+  list(
+    data = panel,
+    scaling = list(
+      log_assets     = c(mean = log_assets_mean,     sd = log_assets_sd),
+      debt_to_equity = c(mean = debt_to_equity_mean, sd = debt_to_equity_sd),
+      interest_cov   = c(mean = interest_cov_mean,   sd = interest_cov_sd),
+      firm_age       = c(mean = firm_age_mean,        sd = firm_age_sd)
+    ),
+    true_betas = c(
+      intercept       = beta0,
+      log_assets      = beta_log_assets,
+      debt_to_equity  = beta_debt_to_equity,
+      interest_cov    = beta_interest_cov,
+      sector          = beta_sector,
+      firm_age        = beta_firm_age
+    )
+  )
+}
+
+
+
+
+
+```
+
+## Simulation
+
+This creates one synthetic dataset with 50k rows
+
+And tests the default rate -- should be around 2-5%
+
+
+```{r}
+
+######################################################################
+
+result <- simulate_clean_data_panel()
+
+###################################################################
+
+dat    <- result$data
+
+
+mean(dat$default)  # default rate check - should be near the "truth"
+```
+
+## Model fit
+
+Fitting a logistic regression -- this is the baseline model
+
+The second one will fit exactly because the coefficients are also scaled
+
+
+
+```{r}
+## Model fit
+# Fitting a logistic regression -- this is the baseline model
+# fitcheck_raw uses raw inputs, fitcheck_scaled uses pre-scaled inputs (should recover true betas)
+
+# Raw inputs -- coefficients not directly comparable to true betas
+fitcheck_raw <- glm(default ~ log_assets + debt_to_equity + interest_cov + sector + firm_age,
+            data = dat, family = binomial())
+summary(fitcheck_raw)
+
+# Pre-scaled inputs -- coefficients should recover true betas, but slightly looser because the trajectory mechanism introduces heterogeneity
+#   also because we have repeated observations per firm so no more independece
+
+fitcheck_scaled <- glm(default ~ log_assets_z + debt_to_equity_z + interest_cov_z + 
+                      sector + firm_age_z,
+            data = dat, family = binomial())
+summary(fitcheck_scaled)
+
+# Compare estimated vs true betas -- this is your coefficient recovery check
+true_betas <- result$true_betas
+
+recovery <- data.frame(
+  true      = true_betas,
+  estimated = coef(fitcheck_scaled),
+  diff      = coef(fitcheck_scaled) - true_betas
+)
+print(round(recovery, 4))
+
+```
+
+*** Here: add Igl scores for the clean dataset
+
+```{r}
+
+```
+
+
+
+##Part 2: Data Impairment
+
+**Impairment 1: MCAR**
+
+Explanation of what happens in this function:
+
+- first: define function and its three inputs (clean data, scaling parameters, severity with default as "mild" if we don't specify
+- switch: mapping mild to 0.08 and severe to .28
+- make a copy of the clean dataset to work on
+- identify the inancial variables that will get missingness  / apply same impairment logic to each one
+- actual mcar mechanism. flip a weighted coin for each of the n firms — it returns 1 (missing) with probability miss_prob and 0 (observed) with probability 1 - miss_prob. The == 1 converts that into a logical vector of TRUE/FALSE, where TRUE means that firm's value will be set to missing. Every firm has exactly the same probability of being missing regardless of anything else about them — that's what makes it MCAR.
+- where "missing idx" is true (1), replace with NAs
+- for now: mean imputation with the scaling clean mean
+- rescale
+- metadata: attaching tags to an object without making columns in a dataframe
+- return the impaired dataset
+
+
+```{r}
+impair_mcar <- function(dat, scaling, severity = "mild") {
+  
+  # Realistic placeholder severity levels
+  # Mild: ~5-10% missing, Severe: ~25-30% missing
+  miss_prob <- switch(severity,
+    mild   = 0.08,
+    severe = 0.28
+  )
+  
+  dat_impaired <- dat
+  n <- nrow(dat)
+  
+  # Apply MCAR to financial ratio columns only
+  # (sector and firm_age are typically always observed)
+  financial_vars <- c("log_assets", "debt_to_equity", "interest_cov")
+  
+  for (var in financial_vars) {
+    
+    # Introduce missingness completely at random
+    missing_idx <- rbinom(n, 1, prob = miss_prob) == 1
+    dat_impaired[[var]][missing_idx] <- NA
+    
+        # Sanity check: print realized missing rate before imputation
+    cat(sprintf("MCAR missing rate for %s: %.3f\n", var, mean(missing_idx)))
+    
+    
+    # Placeholder imputation: clean mean (will be swapped out later)
+    clean_mean <- scaling[[var]]["mean"]
+    dat_impaired[[var]][is.na(dat_impaired[[var]])] <- clean_mean
+    
+    # Rescale using clean parameters
+    dat_impaired[[paste0(var, "_z")]] <- rescale_with_clean_params(
+      dat_impaired[[var]],
+      scaling[[var]]
+    )
+  }
+  
+  # Track what was impaired for later evaluation
+  attr(dat_impaired, "impairment") <- list(
+    type      = "MCAR",
+    severity  = severity,
+    miss_prob = miss_prob,
+    vars      = financial_vars
+  )
+  
+  dat_impaired
+}
+
+
+```
+
+Running the MCAR function to create "mild" and "severe" impaired data
+
+```{r}
+
+dat_mcar_mild   <- impair_mcar(dat, result$scaling, severity = "mild")
+dat_mcar_severe <- impair_mcar(dat, result$scaling, severity = "severe")
+
+
+```
+
+
+**Impairment 2: MNAR / MAR**
+
+
+
+```{r}
+
+impair_mnar <- function(dat, scaling, severity = "mild") {
+  
+  # MNAR: missingness in interest_cov depends on interest_cov itself
+  # Mechanism: firms with poor interest coverage strategically omit reporting
+  # This is MNAR because missingness depends on the unobserved value of the
+  # variable itself (Little & Rubin, 2002; Zhang, 2023, p. 117).
+  # Logistic regression method used for realistic gradual probability change.
+  
+  # Note: interest_cov_z (standardised using clean params) is used as the
+  # predictor so the intercept/coefficient scale is interpretable and
+  # comparable across severity levels.
+  
+  # Intercepts tuned to match MCAR/MAR severity levels for fair comparison:
+  # Mild: ~8% average missing, Severe: ~28% average missing
+  mnar_intercept <- switch(severity,
+    mild   = -3.5,
+    severe = -1.5
+  )
+  
+  dat_impaired <- dat
+  n <- nrow(dat)
+  
+  # Use the clean standardised interest_cov as the predictor
+  # Negative coefficient: lower interest coverage = higher missingness prob
+  prob_missing <- plogis(mnar_intercept - 1.0 * dat$interest_cov_z)
+  
+  # Sanity check
+  cat("Average MNAR missing rate:", round(mean(prob_missing), 3), "\n")
+  
+  # Apply missingness
+  missing_idx <- rbinom(n, 1, prob = prob_missing) == 1
+  dat_impaired$interest_cov[missing_idx] <- NA
+  
+  # Placeholder imputation: clean mean (will be swapped out later)
+  clean_mean <- scaling$interest_cov["mean"]
+  dat_impaired$interest_cov[is.na(dat_impaired$interest_cov)] <- clean_mean
+  
+  # Rescale using clean parameters
+  dat_impaired$interest_cov_z <- rescale_with_clean_params(
+    dat_impaired$interest_cov,
+    scaling$interest_cov
+  )
+  
+  # Tag with metadata
+  attr(dat_impaired, "impairment") <- list(
+    type           = "MNAR",
+    severity       = severity,
+    mnar_intercept = mnar_intercept,
+    mnar_coef      = -1.0,
+    avg_miss_rate  = mean(prob_missing),
+    driven_by      = "interest_cov_z",
+    vars           = "interest_cov"
+  )
+  
+  dat_impaired
+}
+
+
+```
+
+```{r}
+
+dat_mnar_mild   <- impair_mnar(dat, result$scaling, severity = "mild")
+dat_mnar_severe <- impair_mnar(dat, result$scaling, severity = "severe")
+
+
+```
+
+
+
+**Part 2b: MAR**
+Can delete later
+
+Note: currently this is MAR, but if we find something like "firms with bad financial ratios don't report" then it is MNAR -- check with thecompany
+
+Due to older firms not reporting. This is subject to change.
+MNAR because whether a value is missing depends on an observed variable (here = firm_age)
+
+Explanation of what happens in this function:
+- first: taking in data, scaling from clean variables, severity
+- (-3.5) / (-1.5) are the log-odds of missingness (intercept) when firm_age =  0
+      (tuned until the average missing rate across simulated firms is ~8% or 28%)
+- Plogis(): each firm gets its own missing probability based on its age
+- Check for the average of all indiv. probabilities (8% / 28%)
+- Applying missingness: rbinom flips a weighted coin for each firm using their probability made above
+    Result: when something gets set to 1, then it becomes an "NA"
+- Rescale with clean parameters (mean and SD), tag with metadata
+
+
+```{r}
+
+impair_mar <- function(dat, scaling, severity = "mild") {
+  
+  # MAR: missingness in interest_cov depends on firm_age (fully observed)
+  # Mechanism: older firms less likely to report interest coverage
+  # This is MAR because firm_age is always observed — the missingness
+  # predictor is not the variable with missing data (Little & Rubin, 2002;
+  # Zhang, 2023). Logistic regression method used for realistic gradual
+  # probability change (Zhang, 2023, p. 116).
+  
+  # Intercepts tuned to match MCAR severity levels for fair comparison:
+  # Mild: ~8% average missing, Severe: ~28% average missing
+  mar_intercept <- switch(severity,
+    mild   = -3.5,
+    severe = -1.5
+  )
+  
+  dat_impaired <- dat
+  n <- nrow(dat)
+  
+  # Missingness probability increases with firm age
+  prob_missing <- plogis(mar_intercept + 0.05 * dat$firm_age)
+  
+  # Sanity check
+  cat("Average MAR missing rate:", round(mean(prob_missing), 3), "\n")
+  
+  # Apply missingness
+  missing_idx <- rbinom(n, 1, prob = prob_missing) == 1
+  dat_impaired$interest_cov[missing_idx] <- NA
+  
+  # Placeholder imputation: clean mean (will be swapped out later)
+  clean_mean <- scaling$interest_cov["mean"]
+  dat_impaired$interest_cov[is.na(dat_impaired$interest_cov)] <- clean_mean
+  
+  # Rescale using clean parameters
+  dat_impaired$interest_cov_z <- rescale_with_clean_params(
+    dat_impaired$interest_cov,
+    scaling$interest_cov
+  )
+  
+  # Tag with metadata
+  attr(dat_impaired, "impairment") <- list(
+    type           = "MAR",
+    severity       = severity,
+    mar_intercept  = mar_intercept,
+    avg_miss_rate  = mean(prob_missing),
+    driven_by      = "firm_age",
+    vars           = "interest_cov"
+  )
+  
+  dat_impaired
+}
+
+```
+
+**Impairment 3: Measurement Noise**
+
+What is happening here:
+- our function takes in clean data, scaling data, and which severity (defaulted to "mild")
+- Switch: maps severity string (above) to a number
+- Mild at the moment: will have an extra SD 10% of the clean variable's SD -- severe is 50%. subject to change!!
+- Save a new copy and save the sample size in n
+- Designating only a few "noise variables" (firm size not getting noise - confirm)
+- Cycling through all the variables: pull the clean SD from "scaling", generate N draws from a normal distribution centered around zero. Adding to each variable * multiplier for mild / severe
+- Print impairment per variable 
+- rescale using clean parameters -- isolating impairment effect from any scale effect. difference in model performance is due to nature of impairment
+- metadata tag on the new dataframe
+
+
+
+```{r}
+
+
+impair_noise <- function(dat, scaling, severity = "mild") {
+  
+  # Measurement noise: Gaussian noise added to continuous financial predictors
+  # Severity defined as % of each variable's clean SD
+  # mild: SD_noise = 10% of clean SD, severe: SD_noise = 50% of clean SD
+  noise_sd_multiplier <- switch(severity,
+    mild   = 0.10,
+    severe = 0.50
+  )
+  
+  dat_impaired <- dat
+  n <- nrow(dat)
+  
+  # Variables to corrupt — continuous financial predictors only
+  # (firm_age excluded: it drives MNAR so corrupting it would confound comparisons)
+  # (sector excluded: categorical)
+  noise_vars <- c("log_assets", "debt_to_equity", "interest_cov")
+  
+  for (v in noise_vars) {
+    clean_sd   <- scaling[[v]]["sd"]
+    noise      <- rnorm(n, mean = 0, sd = noise_sd_multiplier * clean_sd)
+    dat_impaired[[v]] <- dat_impaired[[v]] + noise
+  }
+  
+  # Print SD inflation per variable so you can verify severity
+  for (v in noise_vars) {
+    cat(sprintf("Noise SD for %s: %.4f (%.0f%% of clean SD = %.4f)\n",
+      v,
+      noise_sd_multiplier * scaling[[v]]["sd"],
+      noise_sd_multiplier * 100,
+      scaling[[v]]["sd"]
+    ))
+  }
+  
+  # Rescale using clean parameters for MEAN ONLY
+for (v in noise_vars) {
+  z_name <- paste0(v, "_z")
+  dat_impaired[[z_name]] <- rescale_mean_only(
+    dat_impaired[[v]],
+    scaling[[v]]
+  )
+}
+  
+  # Tag with metadata
+  attr(dat_impaired, "impairment") <- list(
+    type               = "noise",
+    severity           = severity,
+    noise_sd_multiplier = noise_sd_multiplier,
+    vars               = noise_vars
+  )
+  
+  dat_impaired
+}
+
+
+
+```
+
+
+
+Creating the actual datasets
+
+```{r}
+
+dat_noise_mild   <- impair_noise(dat, result$scaling, severity = "mild")
+dat_noise_severe <- impair_noise(dat, result$scaling, severity = "severe")
+```
+
+
+
+
+
+**Impairment 4: Implausible Values**
+
+What is happening:
+- Taking same inputs of clean data, scaling, severity
+- Saving new copy, taking number of rows
+- Defining what it means to be "implausible": for log_assets and interest_cov this is being 6 SD away
+- Debt to equity / firm_age get invalid values (edit later)
+- Inject the values: sample picks rows randomly. (floor = for a whole number). The rows get their values replaced with implausible values
+- sprintf template:
+    It fills in left to right:
+      - `%s` ← `v` (e.g. `"log_assets"`)
+      - `%d` ← `length(corrupt_idx)` (e.g. `50`)
+      - `%.0f` ← `corrupt_rate * 100` (e.g. `5`)
+      - `%.2f` ← `implausible_values[[v]]` (e.g. `12.34`)
+- rescale (mean and sd (??))
+
+
+
+```{r}
+
+impair_implausible <- function(dat, scaling, severity = "mild") {
+  
+  # Implausible values: replace a random subset of rows with domain-invalid
+  # or extreme outlier values, depending on the variable
+  # Severity controls the % of rows corrupted
+  # PLACEHOLDER rates — to be confirmed with company supervisors
+  corrupt_rate <- switch(severity,
+    mild   = 0.05,  # 5% of rows corrupted
+    severe = 0.15   # 15% of rows corrupted
+  )
+  
+  dat_impaired <- dat
+  n <- nrow(dat)
+  
+  # --- Define implausible value per variable ---
+  # PLACEHOLDER definitions — swap these out once company confirms benchmarks
+  implausible_values <- list(
+    log_assets     = mean(dat$log_assets) + 6 * sd(dat$log_assets),  # extreme high outlier
+    debt_to_equity = -1,                                               # domain-invalid: negative
+    interest_cov   = mean(dat$interest_cov) + 6 * sd(dat$interest_cov), # extreme high outlier
+    firm_age       = -10                                               # domain-invalid: negative age
+  )
+  
+  implausible_vars <- names(implausible_values)
+  
+  # --- Inject implausible values ---
+  for (v in implausible_vars) {
+    corrupt_idx <- sample(n, size = floor(corrupt_rate * n), replace = FALSE)
+    dat_impaired[[v]][corrupt_idx] <- implausible_values[[v]]
+    cat(sprintf("Implausible values injected in %s: %d rows (%.0f%%), value = %.2f\n",
+      v,
+      length(corrupt_idx),
+      corrupt_rate * 100,
+      implausible_values[[v]]
+    ))
+  }
+  
+  # No rescaling — implausible values are intended to distort the variable's
+  # distribution. Rescaling would compress the damage and understate the impairment effect.
+  
+  # Tag with metadata
+  attr(dat_impaired, "impairment") <- list(
+    type         = "implausible",
+    severity     = severity,
+    corrupt_rate = corrupt_rate,
+    vars         = implausible_vars
+  )
+  
+  dat_impaired
+}
+
+
+```
+
+Creating the datasets
+```{r}
+
+dat_impl_mild   <- impair_implausible(dat, result$scaling, severity = "mild")
+dat_impl_severe <- impair_implausible(dat, result$scaling, severity = "severe")
+
+
+```
+
+**Doublechecking the functions**
+
+```{r}
+
+# ── Sanity Checks: All Impairment Functions ────────────────────────────────
+
+# Assumes the following objects exist in your environment:
+# dat                                        (clean data)
+# dat_mcar_mild,    dat_mcar_severe
+# dat_mnar_mild,    dat_mnar_severe
+# dat_noise_mild,   dat_noise_severe
+# dat_impl_mild,    dat_impl_severe
+# scaling <- attr(dat, "scaling")
+
+
+scaling <- attr(result, "scaling")
+
+
+# ── 1. Missing rates (MCAR & MNAR) ────────────────────────────────────────
+
+cat("=== Missing Rates ===\n")
+cat("MCAR mild:  ", round(mean(is.na(dat_mcar_mild$interest_cov)), 3),  "\n")
+cat("MCAR severe:", round(mean(is.na(dat_mcar_severe$interest_cov)), 3), "\n")
+cat("MNAR mild:  ", round(mean(is.na(dat_mnar_mild$interest_cov)), 3),  "\n")
+cat("MNAR severe:", round(mean(is.na(dat_mnar_severe$interest_cov)), 3), "\n")
+
+# ── 2. MNAR missingness increases with firm age ────────────────────────────
+
+cat("\n=== MNAR: Missing Rate by Firm Age Quartile ===\n")
+age_bins <- cut(dat$firm_age, breaks = 4)
+
+cat("Mild:\n")
+print(round(tapply(is.na(dat_mnar_mild$interest_cov), age_bins, mean), 3))
+
+cat("Severe:\n")
+print(round(tapply(is.na(dat_mnar_severe$interest_cov), age_bins, mean), 3))
+
+# ── 3. Noise inflated SD ──────────────────────────────────────────────────
+
+cat("\n=== Noise: SD Before and After ===\n")
+noise_vars <- c("log_assets", "debt_to_equity", "interest_cov")
+
+for (v in noise_vars) {
+  cat(sprintf("%-20s clean SD: %.4f | mild SD: %.4f | severe SD: %.4f\n",
+    v,
+    sd(dat[[v]]),
+    sd(dat_noise_mild[[v]]),
+    sd(dat_noise_severe[[v]])
+  ))
+}
+
+# ── 4. Implausible values are present ─────────────────────────────────────
+
+cat("\n=== Implausible: Summary of Affected Variables ===\n")
+impl_vars <- c("log_assets", "debt_to_equity", "interest_cov", "firm_age")
+
+for (v in impl_vars) {
+  cat(sprintf("\n%s:\n", v))
+  cat("  mild max:  ", round(max(dat_impl_mild[[v]]),  2), "\n")
+  cat("  severe max:", round(max(dat_impl_severe[[v]]), 2), "\n")
+}
+
+# Domain-invalid checks
+cat("\nNegative debt_to_equity — mild: ",
+  round(mean(dat_impl_mild$debt_to_equity < 0), 3),  
+  "| severe:", 
+  round(mean(dat_impl_severe$debt_to_equity < 0), 3), "\n")
+
+cat("Negative firm_age — mild: ",
+  round(mean(dat_impl_mild$firm_age < 0), 3),  
+  "| severe:", 
+  round(mean(dat_impl_severe$firm_age < 0), 3), "\n")
+
+# ── 5. Visual distributions ───────────────────────────────────────────────
+
+par(mfrow = c(3, 3), mar = c(4, 4, 2, 1))
+
+for (v in c("log_assets", "debt_to_equity", "interest_cov")) {
+  hist(dat[[v]],            main = paste("Clean -", v),       xlab = v, col = "grey90")
+  hist(dat_noise_mild[[v]], main = paste("Noise mild -", v),  xlab = v, col = "lightblue")
+  hist(dat_impl_mild[[v]],  main = paste("Implaus mild -", v), xlab = v, col = "lightyellow")
+}
+
+# ── 6. Metadata tags ──────────────────────────────────────────────────────
+
+cat("\n=== Metadata Tags ===\n")
+for (nm in c("dat_mcar_mild", "dat_mcar_severe",
+             "dat_mnar_mild", "dat_mnar_severe",
+             "dat_noise_mild", "dat_noise_severe",
+             "dat_impl_mild", "dat_impl_severe")) {
+  cat(nm, "→ type:", attr(get(nm), "impairment")$type,
+      "| severity:", attr(get(nm), "impairment")$severity, "\n")
+}
+
+```
+
+
