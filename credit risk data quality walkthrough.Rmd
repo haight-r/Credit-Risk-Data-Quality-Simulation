@@ -377,6 +377,7 @@ dat    <- result$data
 
 
 mean(dat$default)  # default rate check - should be near the "truth"
+
 ```
 
 ## Model fit
@@ -657,6 +658,18 @@ impair_mar <- function(dat, scaling, severity = "mild") {
 
 ```
 
+```{r}
+
+dat_mar_mild   <- impair_mar(dat, result$scaling, severity = "mild")
+dat_mar_severe <- impair_mar(dat, result$scaling, severity = "severe")
+
+
+
+```
+
+
+
+
 **Impairment 3: Measurement Noise**
 
 What is happening here:
@@ -664,7 +677,7 @@ What is happening here:
 - Switch: maps severity string (above) to a number
 - Mild at the moment: will have an extra SD 10% of the clean variable's SD -- severe is 50%. subject to change!!
 - Save a new copy and save the sample size in n
-- Designating only a few "noise variables" (firm size not getting noise - confirm)
+- Designating only a few "noise variables" (firm age not getting noise - confirm)
 - Cycling through all the variables: pull the clean SD from "scaling", generate N draws from a normal distribution centered around zero. Adding to each variable * multiplier for mild / severe
 - Print impairment per variable 
 - rescale using clean parameters -- isolating impairment effect from any scale effect. difference in model performance is due to nature of impairment
@@ -761,7 +774,7 @@ What is happening:
       - `%d` ← `length(corrupt_idx)` (e.g. `50`)
       - `%.0f` ← `corrupt_rate * 100` (e.g. `5`)
       - `%.2f` ← `implausible_values[[v]]` (e.g. `12.34`)
-- rescale (mean and sd (??))
+- no rescale (mean and sd)
 
 
 
@@ -856,6 +869,8 @@ cat("MCAR severe:", round(mean(is.na(dat_mcar_severe$interest_cov)), 3), "\n")
 cat("MNAR mild:  ", round(mean(is.na(dat_mnar_mild$interest_cov)), 3),  "\n")
 cat("MNAR severe:", round(mean(is.na(dat_mnar_severe$interest_cov)), 3), "\n")
 
+# zero bc we imputed
+
 # ── 2. MNAR missingness increases with firm age ────────────────────────────
 
 cat("\n=== MNAR: Missing Rate by Firm Age Quartile ===\n")
@@ -866,6 +881,8 @@ print(round(tapply(is.na(dat_mnar_mild$interest_cov), age_bins, mean), 3))
 
 cat("Severe:\n")
 print(round(tapply(is.na(dat_mnar_severe$interest_cov), age_bins, mean), 3))
+
+# again...zero because imputation
 
 # ── 3. Noise inflated SD ──────────────────────────────────────────────────
 
@@ -892,26 +909,44 @@ for (v in impl_vars) {
   cat("  severe max:", round(max(dat_impl_severe[[v]]), 2), "\n")
 }
 
+for (v in impl_vars) {
+  cat(sprintf("\n%s:\n", v))
+  cat("  mild min:  ", round(min(dat_impl_mild[[v]]),  2), "\n")
+  cat("  severe min:", round(min(dat_impl_severe[[v]]), 2), "\n")
+}
+
+
 # Domain-invalid checks
 cat("\nNegative debt_to_equity — mild: ",
   round(mean(dat_impl_mild$debt_to_equity < 0), 3),  
   "| severe:", 
   round(mean(dat_impl_severe$debt_to_equity < 0), 3), "\n")
+# not going to see anything notable for firm age or assets (set to negative #s)
+
 
 cat("Negative firm_age — mild: ",
   round(mean(dat_impl_mild$firm_age < 0), 3),  
   "| severe:", 
   round(mean(dat_impl_severe$firm_age < 0), 3), "\n")
 
-# ── 5. Visual distributions ───────────────────────────────────────────────
-
+# ── 5a. Visual distributions: Noise ───────────────────────────────────────
 par(mfrow = c(3, 3), mar = c(4, 4, 2, 1))
 
 for (v in c("log_assets", "debt_to_equity", "interest_cov")) {
-  hist(dat[[v]],            main = paste("Clean -", v),       xlab = v, col = "grey90")
-  hist(dat_noise_mild[[v]], main = paste("Noise mild -", v),  xlab = v, col = "lightblue")
-  hist(dat_impl_mild[[v]],  main = paste("Implaus mild -", v), xlab = v, col = "lightyellow")
+  hist(dat[[v]],             main = paste("Clean -", v),        xlab = v, col = "grey90")
+  hist(dat_noise_mild[[v]],  main = paste("Noise mild -", v),   xlab = v, col = "lightblue")
+  hist(dat_noise_severe[[v]], main = paste("Noise severe -", v), xlab = v, col = "steelblue")
 }
+
+# ── 5b. Visual distributions: Implausible ─────────────────────────────────
+par(mfrow = c(3, 3), mar = c(4, 4, 2, 1))
+
+for (v in c("log_assets", "debt_to_equity", "interest_cov")) {
+  hist(dat[[v]],              main = paste("Clean -", v),           xlab = v, col = "grey90")
+  hist(dat_impl_mild[[v]],    main = paste("Implaus mild -", v),    xlab = v, col = "lightyellow")
+  hist(dat_impl_severe[[v]],  main = paste("Implaus severe -", v),  xlab = v, col = "orange")
+}
+
 
 # ── 6. Metadata tags ──────────────────────────────────────────────────────
 
