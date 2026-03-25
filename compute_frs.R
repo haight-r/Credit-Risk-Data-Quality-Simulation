@@ -24,11 +24,11 @@
 # Components deliberately omitted (see Sec. 8.3-8.5):
 #   - Diversitaet     -- uninformative for continuous ratios
 #   - Klumpenbildung  -- designed for real-world heaping artefacts
-#   - Verteilung      -- entropy requires discretisation; adds noise
+#   - Verteilung      -- entropy requires discretization; adds noise
 #
 # Aggregation method: geometric mean of the K included components.
 # The geometric mean is recommended in Sec. 8.9 as "besonders sensitiv auf
-# niedrige Einzelwerte" -- exactly the behaviour we want, since a single
+# niedrige Einzelwerte" -- exactly the behavior we want, since a single
 # badly damaged dimension should pull the overall FRS down hard.
 # ============================================================================
 

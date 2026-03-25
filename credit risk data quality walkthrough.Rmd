@@ -57,7 +57,7 @@ These are just tests at the moment
 c) log_assets: proxy for firm size, dependent on age and sector
 d) debt to equity: higher leverage is more dangerous --> dependent on how big the firm is and how old it is
 e) interest_cov: proxy for cash flow 
-
+f) NEW -- ADD -- CREFO SCORE
 
 ----------------------------------------------------------
 
@@ -387,8 +387,6 @@ result <- simulate_clean_data_panel()
 ###################################################################
 
 dat    <- result$data
-
-
 mean(dat$default)  # default rate check - should be near the "truth"
 
 ```
@@ -435,10 +433,7 @@ print(round(recovery, 4))
 
 ```{r}
 
-
 source("compute_frs.R")
-
-
 
 ```
 
