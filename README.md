@@ -29,7 +29,7 @@
   
   ## pure values
   ### - Firm age (distribution: more younger firms)
-  ### - Sector (currently two sectors, random coin flip)
+  ### - Sector (currently three sectors)
   
   ## chained regression dependencies
   ### - (log) Assets (dependent on age and sector)
@@ -40,7 +40,9 @@
         interest. dependent on everything above. 
   ###         --> cash flow proxy (ebit / revenue / margins)
      
-  ### - potential to add Crefo score as an indicator?   
+  ### - Crefo score: an external bureau score: payment behavior with other creditors
+              --> dependent on the prior variables
+              --> sectors don't perform equally across crefo
         
   ### Most features are standardized / can be used to "anchor" impaired data later to avoid confounding effects
   
@@ -89,8 +91,8 @@
   # ============================================================
   
   # Underlying idea:
-  ### Missingness is due to older firms not reporting
-  ### (could also tie this into the crefo score)
+  ### Missingness in Crefo scores is due to firms being new / not reporting
+  ### data yet. Likelihood of a score there increases over time
   
   ### same procedure as MNAR with a logistic regression
   
