@@ -2,7 +2,6 @@
 # FRS Usage — paste into your R Markdown walkthrough
 # ============================================================================
 #
-# This replaces the previous frs_usage_example.R.
 #
 # Placement in your .Rmd:
 #   1. FRS on clean data: right after the coefficient recovery check

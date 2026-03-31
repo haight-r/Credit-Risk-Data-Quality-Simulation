@@ -9,22 +9,12 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```
 
-## Part 0: Helper functions and setup --> put this in another script!!
+## Part 0: Helper functions and setup 
 
-Purpose: Rescale the impaired world with the parameters from the perfect world data
-The second function is for the Noise impairment. It rescales the mean only because noise will blow up the variance, don't want to recorrect that
-And we don't want any rescaling for implausible values
 ```{r}
-rescale_with_clean_params <- function(x_impaired, scaling_params) {
-    (x_impaired - scaling_params["mean"]) / scaling_params["sd"]
-  }
+source("02_helperfunctions.R")
+```
 
-# for random noise only
-rescale_mean_only <- function(x_impaired, scaling_params) {
-  x_impaired - scaling_params["mean"]
-}
-
-# implausible values doesn't get rescaled
 
 ```
 
@@ -157,10 +147,8 @@ simulate_clean_data_panel <- function(N = 5000, seed = 1,
   
   # CHANGED: log_assets now uses sector dummies instead of binary sector
   log_assets_orig     <- 8 + 0.03 * firm_age_orig + 0.3 * sector_2 + 0.1 * sector_3 + rnorm(N, 0, 1)
-  debt_to_equity_orig <- pmax(3 - 0.1 * scale(log_assets_orig) - 0.02 * scale(firm_age_orig) +
-                                rgamma(N, shape = 1, rate = 1), 0)
-  interest_cov_orig   <- pmax(5 - 0.4 * scale(debt_to_equity_orig) + 0.3 * scale(log_assets_orig) +
-                                rnorm(N, 0, 1), 0)
+  debt_to_equity_orig <- pmax(3 - 0.1 * scale(log_assets_orig) - 0.02 * scale(firm_age_orig) +   rgamma(N, shape = 1, rate = 1), 0)
+  interest_cov_orig   <- pmax(5 - 0.4 * scale(debt_to_equity_orig) + 0.3 * scale(log_assets_orig) + rnorm(N, 0, 1), 0)
   
   log_assets_mean     <- mean(log_assets_orig);     log_assets_sd     <- sd(log_assets_orig)
   debt_to_equity_mean <- mean(debt_to_equity_orig); debt_to_equity_sd <- sd(debt_to_equity_orig)
@@ -208,7 +196,7 @@ simulate_clean_data_panel <- function(N = 5000, seed = 1,
   
   # ============================================================
   # PHASE 2: TRUE COEFFICIENTS
-  # beta0 lowered from -3.5 to -4.2 to reduce the annual default
+  # beta0 = 4.0 
   # probability, giving firms runway to deteriorate before defaulting
   # rather than exiting immediately at origination.
   # CHANGED: beta_sector replaced with beta_sector2 / beta_sector3
@@ -217,7 +205,7 @@ simulate_clean_data_panel <- function(N = 5000, seed = 1,
   # All betas are on the standardised scale (change in log-odds per 1 SD).
   # ============================================================
   
-  beta0               <- -4
+  beta0               <- -4     # the default rate we want to recover
   beta_log_assets     <- -0.2
   beta_debt_to_equity <-  0.4
   beta_interest_cov   <- -0.3
@@ -517,7 +505,7 @@ print(round(recovery, 4))
 
 ```{r}
 
-source("compute_frs.R")
+source("03_compute_frs.R")
 
 ```
 
