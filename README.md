@@ -5,7 +5,7 @@ This project simulates a firm-level panel dataset for credit risk modeling, incl
 ---
 
 ## How to Use
-- "Credit risk data quality walkthrough" should run everything including the helper functions
+- Download the project zip file. "Credit risk data quality walkthrough" should run everything including the helper functions
 
 ### Stage 1: Data Generating Process
 
@@ -74,7 +74,7 @@ Financials are missing with no systematic reason.
 **Idea:**  
 Missingness depends on the variable itself.
 
-- Firms with poor interest coverage are less likely to report it
+- Firms with poor interest coverage are less likely to report it. And if they don't report it one year, they will just stop reporting it
 - Logistic function controls missingness probability
 
 **What this does:**
@@ -130,7 +130,7 @@ Data may contain impossible or extreme values.
 **Approaches tested:**
 - Median imputation
 - MICE
-- Listwise deletion
+- Listwise deletion (implicit part of logistic regression)
 
 **Additional step:**
 - Rescaling to maintain original distributions (except implausibles)
@@ -147,6 +147,8 @@ Custom function based on:
 
 **Final score:**  
 - Geometric mean of all four components
+
+**FRS is tested on clean, impaired, and prepared data.**
 
 ---
 
