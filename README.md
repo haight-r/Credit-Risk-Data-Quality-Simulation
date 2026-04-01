@@ -1,24 +1,22 @@
 # Credit-Risk-Data-Quality-Simulation
 
-  ## This project simulates a firm-level panel dataset for credit risk modeling, 
-  ## including both a clean "perfect world" dataset and systematically impaired 
-  ## datasets to study the impact of data quality on model performance 
-  ## (recovery & robustness).
+This project simulates a firm-level panel dataset for credit risk modeling, including both a clean "perfect world" dataset and systematically impaired 
+datasets to study the impact of data quality on model performance 
+  (recovery & robustness).
   
 
-  # ============================================================
-  # ============================================================
+ ============================================================
+ ============================================================
   # DATA GENERATING PROCESS
-  # ============================================================
-  # ============================================================
-  # Part 1: Creating the perfect world 
-  # ============================================================
+ ============================================================
+ ============================================================
+  ## Part 1: Creating the perfect world 
+ ============================================================
   
-  # What this does:
+  ## What this does:
  - Creates 5,000 firms with loans from 1-7 years w/ vintage 2005 to 2025
-  ### - Over time firms will have financials that stay the same (random walk),
-  ###   get worse (20%, negative drift), or get better (20%, positive drift)
-  ### - Some firms will default, some will pay off their loans
+ - Over time firms will have financials that stay the same (random walk), get worse (20%, negative drift), or get better (20%, positive drift)
+ - Some firms will default, some will pay off their loans
   
   ###### (inner loop for the firm level + outer loop for multiple firms + rbind)
   
