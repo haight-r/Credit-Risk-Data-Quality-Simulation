@@ -4,10 +4,12 @@ This project simulates a firm-level panel dataset for credit risk modeling, incl
 datasets to study the impact of data quality on model performance 
   (recovery & robustness).
   
+### How to use:
+
 
  ============================================================
  ============================================================
-  # DATA GENERATING PROCESS
+  # STAGE 1: DATA GENERATING PROCESS
  ============================================================
  ============================================================
   ## Part 1: Creating the perfect world 
@@ -17,28 +19,27 @@ datasets to study the impact of data quality on model performance
  - Creates 5,000 firms with loans from 1-7 years w/ vintage 2005 to 2025
  - Over time firms will have financials that stay the same (random walk), get worse (20%, negative drift), or get better (20%, positive drift)
  - Some firms will default, some will pay off their loans
-  
-  ###### (inner loop for the firm level + outer loop for multiple firms + rbind)
+
   
   
   #--------------------------------------------------------------
   
-  # Indicator variables:
+  ## Indicator variables:
   
-  ## pure values
-  ### - Firm age (distribution: more younger firms)
-  ### - Sector (currently three sectors)
+  **pure values:**
+  - Firm age (distribution: more younger firms)
+  - Sector (currently three sectors)
   
-  ## chained regression dependencies
-  ### - (log) Assets (dependent on age and sector)
-  ###        --> firm size proxy
-  ### - Debt to equity (leverage: higher is worse - dep. on age, sector, assets)
-  ###       --> capital structure + how much debt exists
-  ### - Interest coverage ratio: (income / interest exp) - below 1 = can't pay
+  **chained regression dependencies**
+  - (log) Assets (dependent on age and sector)
+        --> firm size proxy
+  - Debt to equity (leverage: higher is worse - dep. on age, sector, assets)
+        --> capital structure + how much debt exists
+  - Interest coverage ratio: (income / interest exp) - below 1 = can't pay
         interest. dependent on everything above. 
-  ###         --> cash flow proxy (ebit / revenue / margins)
+           --> cash flow proxy (ebit / revenue / margins)
      
-  ### - Crefo score: an external bureau score: payment behavior with other creditors
+   - Crefo score: an external bureau score: payment behavior with other creditors
               --> dependent on the prior variables
               --> sectors don't perform equally across sector
         
@@ -47,7 +48,7 @@ datasets to study the impact of data quality on model performance
   
   # ============================================================
   # ============================================================
-  # DATA DESTRUCTION
+  # STAGE 2: DATA DESTRUCTION
   # ============================================================
   # ============================================================
   # Part 2a: MCAR - data missing completely at random
