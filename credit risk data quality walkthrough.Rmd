@@ -13,6 +13,11 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r}
 source("02_helperfunctions.R")
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+install.packages("mice")
+library(mice)
 
 ```
 
@@ -22,7 +27,6 @@ source("02_helperfunctions.R")
 ## Overview
 
 step 1: creating a function that takes inputs re: how many firms to simulate, terms of the loan, the drift of the SD (random walk time series). The default values are fine. 
-Also setting seed for reproduceability 
 
 ----------------------------------------------------------
 
@@ -53,7 +57,7 @@ Step 3: we have to standardize features for the true model (DGP)
 
 
 - compute and save mean and SD of each variable
-- use those parameters to standardize
+- use those parameters to standardize later on
 
 We do it manually rather than just calling scale() because later, when you introduce impairments, you need to apply these exact same parameters to the impaired data — if you let the impaired data rescale itself, the impairment shifts the mean/SD and you'd be confounding two effects at once.
 
@@ -66,7 +70,7 @@ Choose the true coefficients that define the world
 This is the "ground truth" -- can be confirmed from RR
 All are standardized (change in log-odds per 1 SD increase)
 
-  beta0               <- -3.5   this is the intercept -- should be whatever the default                                  rate is
+  beta0               <- -3.5   this is the intercept -- should be whatever the default rate is
   beta_log_assets     <- -0.2   larger firms less likely to default
   beta_debt_to_equity <-  0.4   higher leverage = higher risk
   beta_interest_cov   <- -0.3   higher coverage = lower risk
@@ -74,27 +78,27 @@ All are standardized (change in log-odds per 1 SD increase)
   beta_firm_age       <- -0.1   older firms slightly safer
 
 ----------------------------------------------------------
-NEW: 
 
+Step 5: 
 conversion to panel data!
 
-inner and outer loop -- creating firms that either stay the same over time, get worse, or improve...
+inner and outer loop -- creating firms that either stay the same over time, get worse, or improve... (drift rates)
 default or not
+Crefo will sometimes refresh itself
 over 3-7 year loan periods
 
 Then rows are bound together
 
-
 ----------------------------------------------------------
 
-Step 5: convert linear predictors to PDs
+Step 6: convert linear predictors to PDs
 - the "linpred" part -- weighted sum of the predictors. this is logistic regression
     - computes the log-odds of default for each borrower
 - pd_true: then after: the logistic transformation so we get the true PDs and not log-odds
 
 ----------------------------------------------------------
 
-Step 6: draw observed defaults. (default) 
+Step 7: draw observed defaults. (default) 
 For each borrower, draw a default with pd_true value from before
 - borrowers can have same PDs but 2 different outcomes (default or not)
 
@@ -475,7 +479,7 @@ The second one will fit exactly because the coefficients are also scaled
 # Fitting a logistic regression -- this is the baseline model
 
 # Pre-scaled inputs -- coefficients should recover true betas, but slightly looser because the trajectory mechanism introduces heterogeneity
-#   also because we have repeated observations per firm so no more independece
+#   also because we have repeated observations per firm so no more independence
 
 fitcheck_scaled <- glm(default ~ log_assets_z + debt_to_equity_z + interest_cov_z + 
                          sector_2 + sector_3 + firm_age_z + crefo_z,
@@ -1005,6 +1009,8 @@ cat("Negative firm_age — mild: ",
   round(mean(dat_impl_mild$firm_age < 0), 3),  
   "| severe:", 
   round(mean(dat_impl_severe$firm_age < 0), 3), "\n")
+
+
 ```
 
 
@@ -1127,23 +1133,56 @@ for (nm in c("dat_mar_mild", "dat_mar_severe")) {
 
 
 
-## Feature reliability score on fucked up data
+## Feature reliability score on messed up data
 
 test
 ok the key takeaway is that this will never look all that impressive on data with just one impairment
 
 ```{r}
-frs_mcar_mild <- compute_frs(dat_mcar_mild)
-print_frs(frs_mcar_mild)
 
-frs_mcar_severe <- compute_frs(dat_mcar_severe)
-print_frs(frs_mcar_severe)
+impaired_list <- list(
+  mcar_mild    = dat_mcar_mild,
+  mcar_severe  = dat_mcar_severe,
+  mar_mild     = dat_mar_mild,
+  mar_severe   = dat_mar_severe,
+  mnar_mild    = dat_mnar_mild,
+  mnar_severe  = dat_mnar_severe,
+  noise_mild   = dat_noise_mild,
+  noise_severe = dat_noise_severe,
+  impl_mild    = dat_impl_mild,
+  impl_severe  = dat_impl_severe
+)
+
+frs_all <- compute_frs_all(dat, impaired_list)
+
+frs_summary <- summarize_frs(frs_all)
+
 ```
 
 
+
+Next: visualization
 ```{r}
-frs_mcar_severe_prepped <- compute_frs(dat_mcar_severe_prepped)
-print_frs(frs_mcar_severe_prepped)
+
+# Quick look
+frs_summary$by_condition
+frs_summary$by_variable
+
+
+# Heatmap: FRS by type x severity
+ggplot(frs_summary$by_condition, aes(x = severity, y = type, fill = frs)) +
+  geom_tile() +
+  geom_text(aes(label = round(frs, 3)), size = 3) +
+  scale_fill_gradient(low = "red", high = "green") +
+  labs(title = "Overall FRS by Impairment Condition")
+
+# Bar chart: which variables degrade most per mechanism
+ggplot(frs_summary$by_variable[frs_summary$by_variable$type != "none", ],
+       aes(x = var, y = frs, fill = type)) +
+  geom_col(position = "dodge") +
+  labs(title = "FRS by Variable and Impairment Type") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
 
 ```
 
@@ -1166,7 +1205,12 @@ prepare_for_modeling <- function(dat, scaling, method = "median") {
   #              maps to ~z=0 after standardisation, adding approximately
   #              zero to the linear predictor). Standard practitioner
   #              approach confirmed by Risk Research supervisors.
-  #   (future methods can be added here, e.g. "mice", "knn", "mean")
+  #   "mice"  — multivariate imputation by chained equations (van Buuren
+  #              & Groothuis-Oudshoorn, 2011). Uses predictive mean matching
+  #              (pmm) as the default method, which preserves the distribution
+  #              shape and avoids impossible values. Single imputation (m=1)
+  #              is used because Monte Carlo replications serve the role of
+  #              repeated draws. Requires the mice package.
   #
   # This function is applied identically regardless of the missingness
   # mechanism (MCAR/MAR/MNAR), reflecting practitioner norms where the
@@ -1177,22 +1221,62 @@ prepare_for_modeling <- function(dat, scaling, method = "median") {
   # Variables that may have been impaired with missingness
   imputable_vars <- c("log_assets", "debt_to_equity", "interest_cov", "firm_age", "crefo")
   
-  for (var in imputable_vars) {
+  # Check if there are any NAs to impute
+  has_missing <- any(sapply(imputable_vars, function(v) any(is.na(dat_prepared[[v]]))))
+  
+  if (has_missing) {
     
-    n_missing <- sum(is.na(dat_prepared[[var]]))
-    
-    if (n_missing > 0) {
+    if (method == "median") {
       
-      fill_value <- switch(method,
-        median = median(dat_prepared[[var]], na.rm = TRUE),
-        mean   = mean(dat_prepared[[var]], na.rm = TRUE),
-        stop(sprintf("Unknown imputation method: '%s'", method))
-      )
+      for (var in imputable_vars) {
+        n_missing <- sum(is.na(dat_prepared[[var]]))
+        if (n_missing > 0) {
+          fill_value <- median(dat_prepared[[var]], na.rm = TRUE)
+          dat_prepared[[var]][is.na(dat_prepared[[var]])] <- fill_value
+          cat(sprintf("Imputed %d NAs in %-20s method: %s, value: %.4f\n",
+            n_missing, var, method, fill_value))
+        }
+      }
       
-      dat_prepared[[var]][is.na(dat_prepared[[var]])] <- fill_value
+    } else if (method == "mice") {
       
-      cat(sprintf("Imputed %d NAs in %-20s method: %s, value: %.4f\n",
-        n_missing, var, method, fill_value))
+      require(mice)
+      
+      # Select only the raw predictor columns for imputation
+      # Exclude _z columns, metadata columns, and the outcome variable
+      mice_vars <- imputable_vars[imputable_vars %in% names(dat_prepared)]
+      
+      # Also include sector dummies and default as predictors for the
+      # imputation model (they help MICE predict missing values) but
+      # they themselves have no missingness
+      mice_cols <- c(mice_vars, "sector_2", "sector_3", "default")
+      mice_cols <- mice_cols[mice_cols %in% names(dat_prepared)]
+      
+      mice_input <- dat_prepared[, mice_cols]
+      
+      # Report what's missing before imputation
+      for (var in imputable_vars) {
+        n_missing <- sum(is.na(dat_prepared[[var]]))
+        if (n_missing > 0) {
+          cat(sprintf("MICE imputing %d NAs in %s\n", n_missing, var))
+        }
+      }
+      
+      # Run MICE: m=1 because MC replications handle uncertainty;
+      # pmm (predictive mean matching) preserves distribution shape
+      imp <- mice(mice_input, m = 1, method = "pmm", maxit = 5,
+                  printFlag = FALSE)
+      completed <- complete(imp, 1)
+      
+      # Write imputed values back into the main dataframe
+      for (var in mice_vars) {
+        dat_prepared[[var]] <- completed[[var]]
+      }
+      
+      cat("MICE imputation complete.\n")
+      
+    } else {
+      stop(sprintf("Unknown imputation method: '%s'", method))
     }
   }
   
@@ -1217,8 +1301,7 @@ prepare_for_modeling <- function(dat, scaling, method = "median") {
 
 ```
 
-Fixing the data
-
+Fixing the data: with the default method of median imputation
 ```{r}
 
 # ── Prepare all impaired datasets for modeling ─────────────────────────────
@@ -1239,6 +1322,115 @@ dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe,  result$scalin
 
 
 ```
+
+Sidequest: what happens if we use mice?
+```{r}
+
+
+# Missingness conditions: impute NAs + recompute z-scores
+dat_mcar_mild_prepped_mice   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, method = "mice")
+dat_mcar_severe_prepped_mice <- prepare_for_modeling(dat_mcar_severe, result$scaling, method = "mice")
+dat_mar_mild_prepped_mice    <- prepare_for_modeling(dat_mar_mild,    result$scaling, method = "mice")
+dat_mar_severe_prepped_mice  <- prepare_for_modeling(dat_mar_severe,  result$scaling, method = "mice")
+dat_mnar_mild_prepped_mice   <- prepare_for_modeling(dat_mnar_mild,   result$scaling, method = "mice")
+dat_mnar_severe_prepped_mice <- prepare_for_modeling(dat_mnar_severe, result$scaling, method = "mice")
+
+
+
+```
+
+Last thing: 
+Comparing FRS across imputation methods for missingness
+
+
+```{r}
+
+median_list <- list(
+  mcar_mild   = dat_mcar_mild_prepped,
+  mcar_severe = dat_mcar_severe_prepped,
+  mar_mild    = dat_mar_mild_prepped,
+  mar_severe  = dat_mar_severe_prepped,
+  mnar_mild   = dat_mnar_mild_prepped,
+  mnar_severe = dat_mnar_severe_prepped
+)
+
+mice_list <- list(
+  mcar_mild   = dat_mcar_mild_prepped_mice,
+  mcar_severe = dat_mcar_severe_prepped_mice,
+  mar_mild    = dat_mar_mild_prepped_mice,
+  mar_severe  = dat_mar_severe_prepped_mice,
+  mnar_mild   = dat_mnar_mild_prepped_mice,
+  mnar_severe = dat_mnar_severe_prepped_mice
+)
+
+frs_compare <- compare_frs_imputation(dat, impaired_list, median_list, mice_list)
+frs_compare
+
+
+```
+
+
+```{r}
+
+
+# ---- Plot 1: Overall FRS by mechanism x severity x imputation method ------
+# Collapse across variables first
+frs_summary <- aggregate(
+  frs ~ type + severity + stage,
+  data = frs_compare[frs_compare$var != "MEAN" & frs_compare$type != "none", ],
+  FUN  = mean
+)
+
+ggplot(frs_summary, aes(x = stage, y = frs, fill = stage)) +
+  geom_col() +
+  geom_text(aes(label = round(frs, 3)), vjust = -0.3, size = 3) +
+  facet_grid(severity ~ type) +
+  scale_fill_manual(values = c(clean    = "grey70",
+                               impaired = "#e74c3c",
+                               median   = "#f39c12",
+                               mice     = "#2ecc71")) +
+  labs(title    = "FRS Recovery by Imputation Method",
+       subtitle = "How well does each method restore data quality?",
+       y = "Mean FRS", x = NULL) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+# ---- Plot 2: Component breakdown for a deeper look -----------------------
+# Pivot to long format for faceting by component
+frs_long <- pivot_longer(
+  frs_compare[frs_compare$var != "MEAN" & frs_compare$type != "none", ],
+  cols      = c(completeness, plausibility, outlier, consistency),
+  names_to  = "component",
+  values_to = "score"
+)
+
+frs_comp_summary <- aggregate(
+  score ~ type + severity + stage + component,
+  data = frs_long,
+  FUN  = mean
+)
+
+ggplot(frs_comp_summary[frs_comp_summary$severity == "severe", ],
+       aes(x = stage, y = score, fill = stage)) +
+  geom_col() +
+  facet_grid(component ~ type) +
+  scale_fill_manual(values = c(clean    = "grey70",
+                               impaired = "#e74c3c",
+                               median   = "#f39c12",
+                               mice     = "#2ecc71")) +
+  labs(title    = "FRS Components: Severe Impairment",
+       subtitle = "Completeness should recover; watch plausibility and outliers",
+       y = "Score", x = NULL) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+```
+
+
 
 # PART 3: MODELING
 

@@ -27,7 +27,7 @@
 #   - Verteilung      -- entropy requires discretization; adds noise
 #
 # Variables included: log_assets, debt_to_equity, interest_cov, firm_age,
-# crefo_score. Sector is excluded because it is categorical (outlier and
+# crefo. Sector is excluded because it is categorical (outlier and
 # IQR checks do not apply), always fully observed, and always valid by
 # construction -- its FRS would be a constant 1.0 across all conditions,
 # adding no diagnostic information.
@@ -42,7 +42,7 @@
 compute_frs <- function(dat,
                         vars = c("log_assets", "debt_to_equity",
                                  "interest_cov", "firm_age",
-                                 "crefo_score"),
+                                 "crefo"),
                         plausibility_bounds = NULL,
                         outlier_method      = "iqr",
                         outlier_k           = 3,
@@ -59,7 +59,7 @@ compute_frs <- function(dat,
       debt_to_equity = c(0, Inf),      # leverage ratio cannot be negative
       interest_cov   = c(0, Inf),      # coverage ratio cannot be negative
       firm_age       = c(0, Inf),      # age cannot be negative
-      crefo_score    = c(100, 600)     # Creditreform Bonitaetsindex range
+      crefo          = c(100, 600)     # Creditreform Bonitaetsindex range
     )
   }
   
@@ -109,13 +109,13 @@ compute_frs <- function(dat,
       #
       # "Strong financials" = log_assets above median AND interest_cov
       # above median AND debt_to_equity below median.
-      # "Poor Crefo" = crefo_score above the 90th percentile (i.e.
+      # "Poor Crefo" = crefo above the 90th percentile (i.e.
       # worst 10%).
       # The reverse is also flagged: weak financials (all three
       # indicators in the bad tail) paired with an excellent Crefo
       # score (below 10th percentile).
       crefo_vs_fin = function(d) {
-        obs_mask <- !is.na(d$crefo_score) & !is.na(d$log_assets) &
+        obs_mask <- !is.na(d$crefo) & !is.na(d$log_assets) &
           !is.na(d$interest_cov) & !is.na(d$debt_to_equity)
         result   <- rep(TRUE, nrow(d))
         if (sum(obs_mask) < 10) return(result)
@@ -123,22 +123,22 @@ compute_frs <- function(dat,
         la_med  <- median(d$log_assets[obs_mask])
         ic_med  <- median(d$interest_cov[obs_mask])
         dte_med <- median(d$debt_to_equity[obs_mask])
-        cr_q10  <- quantile(d$crefo_score[obs_mask], 0.10)
-        cr_q90  <- quantile(d$crefo_score[obs_mask], 0.90)
+        cr_q10  <- quantile(d$crefo[obs_mask], 0.10)
+        cr_q90  <- quantile(d$crefo[obs_mask], 0.90)
         
         # Strong financials + poor Crefo
         strong_fin <- obs_mask &
           d$log_assets     > la_med  &
           d$interest_cov   > ic_med  &
           d$debt_to_equity < dte_med
-        poor_crefo <- obs_mask & d$crefo_score > cr_q90
+        poor_crefo <- obs_mask & d$crefo > cr_q90
         
         # Weak financials + excellent Crefo
         weak_fin <- obs_mask &
           d$log_assets     < la_med  &
           d$interest_cov   < ic_med  &
           d$debt_to_equity > dte_med
-        good_crefo <- obs_mask & d$crefo_score < cr_q10
+        good_crefo <- obs_mask & d$crefo < cr_q10
         
         result[strong_fin & poor_crefo] <- FALSE
         result[weak_fin   & good_crefo] <- FALSE
@@ -200,7 +200,7 @@ compute_frs <- function(dat,
                          debt_to_equity = "dte",
                          interest_cov   = "ic",
                          firm_age       = "fa",
-                         crefo_score    = "crefo",
+                         crefo    = "crefo",
                          v
       )
       if (grepl(v_abbrev, rule_name, fixed = TRUE)) {
@@ -269,14 +269,7 @@ compute_frs_all <- function(dat_clean, impaired_list) {
   for (nm in names(impaired_list)) {
     d   <- impaired_list[[nm]]
     
-    d_for_frs <- attr(d, "pre_imputation")
-    if (is.null(d_for_frs)) {
-      d_for_frs <- d
-      message("Note: no pre_imputation snapshot for ", nm,
-              " - computing FRS on post-imputation data.")
-    }
-    
-    frs <- compute_frs(d_for_frs)
+    frs <- compute_frs(d)
     frs$var       <- rownames(frs)
     frs$condition <- nm
     
@@ -290,6 +283,72 @@ compute_frs_all <- function(dat_clean, impaired_list) {
   out <- do.call(rbind, all_frs)
   rownames(out) <- NULL
   out
+}
+
+
+
+# ============================================================================
+# Summarize FRS across conditions
+# ============================================================================
+#
+# Takes the stacked output from compute_frs_all() and produces two summary
+# data frames:
+#
+#   1. by_condition: mean FRS components per impairment type x severity,
+#      collapsed across variables. Answers: "How bad is MCAR-severe overall?"
+#
+#   2. by_variable: mean FRS components per variable x impairment type,
+#      collapsed across severity. Answers: "Which variables get hit hardest
+#      by each mechanism?"
+#
+# Both are returned in a list for easy ggplot use.
+# ============================================================================
+
+summarize_frs <- function(frs_all) {
+  
+  # Remove the MEAN rows added by compute_frs() -- these are per-dataset
+  # averages that would double-count if we aggregate again here.
+  frs <- frs_all[frs_all$var != "MEAN", ]
+  
+  # ---- 1. By condition: type x severity (collapsed across variables) ------
+  
+  by_condition <- aggregate(
+    cbind(completeness, plausibility, outlier, consistency, frs) ~
+      type + severity,
+    data = frs,
+    FUN  = mean
+  )
+  
+  # Sort for readability: clean first, then alphabetical
+  by_condition <- by_condition[order(
+    by_condition$type != "none",   # clean (type="none") first
+    by_condition$type,
+    by_condition$severity
+  ), ]
+  rownames(by_condition) <- NULL
+  
+  # ---- 2. By variable: variable x type (collapsed across severity) --------
+  
+  by_variable <- aggregate(
+    cbind(completeness, plausibility, outlier, consistency, frs) ~
+      var + type,
+    data = frs,
+    FUN  = mean
+  )
+  
+  by_variable <- by_variable[order(
+    by_variable$type != "none",
+    by_variable$type,
+    by_variable$var
+  ), ]
+  rownames(by_variable) <- NULL
+  
+  # ---- 3. Return both ----------------------------------------------------
+  
+  list(
+    by_condition = by_condition,
+    by_variable  = by_variable
+  )
 }
 
 
@@ -308,4 +367,65 @@ print_frs <- function(frs_df, digits = 3) {
   print(round(frs_df[, c("completeness", "plausibility", "outlier",
                          "consistency", "frs")], digits))
   cat("\n")
+}
+
+
+
+
+# ============================================================================
+# Compare FRS across imputation methods for missingness mechanisms
+# ============================================================================
+#
+# Builds a stacked FRS data frame with three stages per condition:
+#   - impaired: after missingness is applied, before any imputation
+#   - median:   after median imputation
+#   - mice:     after MICE imputation
+#
+# Restricted to MCAR / MAR / MNAR since these are the mechanisms where
+# imputation is relevant (noise and implausible values aren't missing data).
+# ============================================================================
+
+compare_frs_imputation <- function(dat_clean,
+                                   impaired_list,
+                                   median_list,
+                                   mice_list) {
+  
+  # Clean baseline
+  frs_clean           <- compute_frs(dat_clean)
+  frs_clean$var       <- rownames(frs_clean)
+  frs_clean$condition <- "clean"
+  frs_clean$type      <- "none"
+  frs_clean$severity  <- "none"
+  frs_clean$stage     <- "clean"
+  
+  all_frs <- list(frs_clean)
+  
+  # Helper to process a list of datasets at a given stage
+  add_stage <- function(dat_list, stage_label) {
+    for (nm in names(dat_list)) {
+      d   <- dat_list[[nm]]
+      frs <- compute_frs(d)
+      frs$var       <- rownames(frs)
+      frs$condition <- nm
+      frs$stage     <- stage_label
+      
+      meta <- attr(d, "impairment")
+      frs$type     <- if (!is.null(meta$type))     meta$type     else nm
+      frs$severity <- if (!is.null(meta$severity)) meta$severity else "unknown"
+      
+      all_frs[[length(all_frs) + 1]] <<- frs
+    }
+  }
+  
+  add_stage(impaired_list, "impaired")
+  add_stage(median_list,   "median")
+  add_stage(mice_list,     "mice")
+  
+  out <- do.call(rbind, all_frs)
+  rownames(out) <- NULL
+  
+  # Order stages for plotting
+  out$stage <- factor(out$stage,
+                      levels = c("clean", "impaired", "median", "mice"))
+  out
 }

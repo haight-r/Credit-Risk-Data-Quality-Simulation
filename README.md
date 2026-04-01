@@ -5,6 +5,7 @@ This project simulates a firm-level panel dataset for credit risk modeling, incl
 ---
 
 ## How to Use
+- "Credit risk data quality walkthrough" should run everything including the helper functions
 
 ### Stage 1: Data Generating Process
 
