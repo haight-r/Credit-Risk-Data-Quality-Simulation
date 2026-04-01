@@ -1057,14 +1057,30 @@ cat("MAR severe:", round(mean(is.na(dat_mar_severe$crefo)), 3), "\n")
 
 
 ```{r}
-# ── 10. Crefo Score: Visual Distributions ──────────────────────────────────
-mean(dat$crefo == 100)
+# ── 10. Crefo Score: Distribution by Sector ────────────────────────────────
 
+par(mfrow = c(1, 3), mar = c(4, 4, 3, 1))
 
+for (s in 1:3) {
+  label <- c("1 (Services)", "2 (Manufacturing)", "3 (Construction)")[s]
+  subset <- dat$crefo[dat$sector == s]
+  hist(subset, main = paste("Crefo - Sector", label),
+       xlab = "crefo", col = c("grey90", "lightblue", "salmon")[s],
+       xlim = c(100, 600), breaks = 20)
+  abline(v = median(subset), lty = 2, lwd = 2)
+  legend("topright", legend = paste("median:", round(median(subset))),
+         bty = "n", cex = 0.9)
+}
 
-hist(dat$crefo,              main = "Crefo Distibution",        
-     xlab = "crefo_score", col = "grey90")
-
+cat("\n=== Crefo Median by Sector ===\n")
+for (s in 1:3) {
+  label <- c("services", "manufacturing", "construction")[s]
+  cat(sprintf("Sector %d (%-15s): median = %.0f, mean = %.1f\n",
+    s, label,
+    median(dat$crefo[dat$sector == s]),
+    mean(dat$crefo[dat$sector == s])
+  ))
+}
 ```
 
 
@@ -1223,4 +1239,7 @@ dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe,  result$scalin
 
 
 ```
+
+# PART 3: MODELING
+
 
