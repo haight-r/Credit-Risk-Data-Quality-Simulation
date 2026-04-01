@@ -115,6 +115,11 @@ Financials contain random measurement error.
 **Idea:**  
 Data may contain impossible or extreme values.
 
+Different kinds of implausibility:
+- Mix of obvious / subtle corruption (plausible-looking but wrong, like a debt_equity of 60 for a healthy firm)
+- Breaking cross-field consistency (going against known relationships)
+- Data entry errors (decimal place shifted)
+
 **What this does:**
 - Inject invalid or extreme values:
   - `log_assets`, `interest_cov`: extreme outliers (~6 SD)

@@ -883,56 +883,116 @@ What is happening:
 
 ```{r}
 
-impair_implausible <- function(dat, scaling, severity = "mild") {
+impair_implausible <- function(dat, severity = "mild") {
   
-  # Implausible values: replace a random subset of rows with domain-invalid
-  # or extreme outlier values, depending on the variable
-  # Severity controls the % of rows corrupted
-  # PLACEHOLDER rates — to be confirmed with company supervisors
+  # Implausible values: inject a mix of domain-invalid, extreme outlier,
+  # and subtly wrong values into financial predictors.
+  #
+  # Unlike the missingness impairments, implausible values are designed
+  # to be heterogeneous — mixing obvious violations with harder-to-detect
+  # distortions. This reflects real-world data quality issues: decimal
+  # shifts, unit confusion, stale data, and system migration artefacts
+  # do not produce uniform error patterns.
+  #
+  # Three error types per variable:
+  #   1. Domain-invalid: clearly impossible values (negative age, etc.)
+  #   2. Extreme outlier: technically possible but far outside normal range
+  #   3. Subtle: within plausible range but wrong (decimal shifts, swaps)
+  #
+  # Severity controls the total % of rows corrupted per variable.
+  # PLACEHOLDER rates — to be confirmed with company supervisors.
+  
   corrupt_rate <- switch(severity,
-    mild   = 0.05,  # 5% of rows corrupted
-    severe = 0.15   # 15% of rows corrupted
+    mild   = 0.05,
+    severe = 0.15
   )
   
   dat_impaired <- dat
   n <- nrow(dat)
   
-  # --- Define implausible value per variable ---
-  # PLACEHOLDER definitions — swap these out once company confirms benchmarks
-  implausible_values <- list(
-    log_assets     = mean(dat$log_assets) + 6 * sd(dat$log_assets),  # extreme high outlier
-    debt_to_equity = -1,                                               # domain-invalid: negative
-    interest_cov   = mean(dat$interest_cov) + 6 * sd(dat$interest_cov), # extreme high outlier
-    firm_age       = -10                                               # domain-invalid: negative age
-  )
+  # ---- log_assets --------------------------------------------------------
+  # Real-world errors: decimal shifts, unit confusion (thousands vs millions),
+  # or placeholder values from system migrations
+  n_corrupt <- floor(corrupt_rate * n)
+  idx <- sample(n, n_corrupt, replace = FALSE)
+  error_type <- sample(1:3, n_corrupt, replace = TRUE, prob = c(0.3, 0.4, 0.3))
   
-  implausible_vars <- names(implausible_values)
+  new_vals <- dat_impaired$log_assets[idx]  # start from real values
+  new_vals[error_type == 1] <- -1           # domain-invalid: negative log assets
+  new_vals[error_type == 2] <- new_vals[error_type == 2] + 
+    sample(c(-1, 1), sum(error_type == 2), replace = TRUE) * 
+    runif(sum(error_type == 2), 4, 6) * sd(dat$log_assets)   # extreme outlier
+  new_vals[error_type == 3] <- new_vals[error_type == 3] * 10  # decimal shift
   
-  # --- Inject implausible values ---
-  for (v in implausible_vars) {
-    corrupt_idx <- sample(n, size = floor(corrupt_rate * n), replace = FALSE)
-    dat_impaired[[v]][corrupt_idx] <- implausible_values[[v]]
-    cat(sprintf("Implausible values injected in %s: %d rows (%.0f%%), value = %.2f\n",
-      v,
-      length(corrupt_idx),
-      corrupt_rate * 100,
-      implausible_values[[v]]
-    ))
-  }
+  dat_impaired$log_assets[idx] <- new_vals
+  cat(sprintf("Implausible in log_assets: %d rows (%.0f%%) — %d invalid, %d extreme, %d subtle\n",
+    n_corrupt, corrupt_rate * 100,
+    sum(error_type == 1), sum(error_type == 2), sum(error_type == 3)))
+  
+  # ---- debt_to_equity ----------------------------------------------------
+  # Real-world errors: sign errors, ratio computed upside down,
+  # or values carried from a different reporting standard
+  idx <- sample(n, n_corrupt, replace = FALSE)
+  error_type <- sample(1:3, n_corrupt, replace = TRUE, prob = c(0.3, 0.4, 0.3))
+  
+  new_vals <- dat_impaired$debt_to_equity[idx]
+  new_vals[error_type == 1] <- -abs(new_vals[error_type == 1]) - 
+    runif(sum(error_type == 1), 0.5, 5)                        # negative values
+  new_vals[error_type == 2] <- new_vals[error_type == 2] * 
+    runif(sum(error_type == 2), 5, 20)                          # ratio blown up
+  new_vals[error_type == 3] <- 1 / pmax(new_vals[error_type == 3], 0.01)  # inverted ratio
+  
+  dat_impaired$debt_to_equity[idx] <- new_vals
+  cat(sprintf("Implausible in debt_to_equity: %d rows (%.0f%%) — %d invalid, %d extreme, %d subtle\n",
+    n_corrupt, corrupt_rate * 100,
+    sum(error_type == 1), sum(error_type == 2), sum(error_type == 3)))
+  
+  # ---- interest_cov ------------------------------------------------------
+  # Real-world errors: sign flip, decimal shift, or stale placeholder
+  idx <- sample(n, n_corrupt, replace = FALSE)
+  error_type <- sample(1:3, n_corrupt, replace = TRUE, prob = c(0.3, 0.4, 0.3))
+  
+  new_vals <- dat_impaired$interest_cov[idx]
+  new_vals[error_type == 1] <- -abs(new_vals[error_type == 1])  # sign flip: negative coverage
+  new_vals[error_type == 2] <- new_vals[error_type == 2] * 
+    runif(sum(error_type == 2), 10, 100)                         # decimal shift
+  new_vals[error_type == 3] <- 0                                 # placeholder zero
+  
+  dat_impaired$interest_cov[idx] <- new_vals
+  cat(sprintf("Implausible in interest_cov: %d rows (%.0f%%) — %d invalid, %d extreme, %d subtle\n",
+    n_corrupt, corrupt_rate * 100,
+    sum(error_type == 1), sum(error_type == 2), sum(error_type == 3)))
+  
+  # ---- firm_age ----------------------------------------------------------
+  # Real-world errors: negative from date arithmetic bugs, age in months
+  # instead of years, or placeholder values
+  idx <- sample(n, n_corrupt, replace = FALSE)
+  error_type <- sample(1:3, n_corrupt, replace = TRUE, prob = c(0.3, 0.3, 0.4))
+  
+  new_vals <- dat_impaired$firm_age[idx]
+  new_vals[error_type == 1] <- -runif(sum(error_type == 1), 1, 20)   # negative age
+  new_vals[error_type == 2] <- 999                                    # placeholder
+  new_vals[error_type == 3] <- new_vals[error_type == 3] * 12         # months not years
+  
+  dat_impaired$firm_age[idx] <- new_vals
+  cat(sprintf("Implausible in firm_age: %d rows (%.0f%%) — %d invalid, %d placeholder, %d subtle\n",
+    n_corrupt, corrupt_rate * 100,
+    sum(error_type == 1), sum(error_type == 2), sum(error_type == 3)))
   
   # No rescaling — implausible values are intended to distort the variable's
-  # distribution. Rescaling would compress the damage and understate the impairment effect.
+  # distribution. Rescaling would compress the damage.
   
-  # Tag with metadata
   attr(dat_impaired, "impairment") <- list(
     type         = "implausible",
     severity     = severity,
     corrupt_rate = corrupt_rate,
-    vars         = implausible_vars
+    error_types  = c("domain_invalid", "extreme_outlier", "subtle"),
+    vars         = c("log_assets", "debt_to_equity", "interest_cov", "firm_age")
   )
   
   dat_impaired
 }
+
 
 
 ```
@@ -940,8 +1000,8 @@ impair_implausible <- function(dat, scaling, severity = "mild") {
 Creating the datasets
 ```{r}
 
-dat_impl_mild   <- impair_implausible(dat, result$scaling, severity = "mild")
-dat_impl_severe <- impair_implausible(dat, result$scaling, severity = "severe")
+dat_impl_mild   <- impair_implausible(dat, severity = "mild")
+dat_impl_severe <- impair_implausible(dat, severity = "severe")
 
 
 ```
