@@ -78,7 +78,7 @@ All are standardized (change in log-odds per 1 SD increase)
   beta_interest_cov   <- -0.3   higher coverage = lower risk
   beta_sector         <-  0.2   manufacturing slightly riskier
   beta_firm_age       <- -0.1   older firms slightly safer
-  beta_crefo          <-  0.3   # higher Crefo score → higher default risk
+  beta_crefo          <-  0.3   higher Crefo score → higher default risk
   
 ----------------------------------------------------------
 
@@ -207,12 +207,12 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
   # ============================================================
   
   beta0               <- -4     # the default rate we want to recover. currently 2%
-  beta_log_assets     <- -0.2
-  beta_debt_to_equity <-  0.4
-  beta_interest_cov   <- -0.3
+  beta_log_assets     <- -0.2   # larger companies - less risk
+  beta_debt_to_equity <-  0.4   # companies with more leverage (debt) = more risk
+  beta_interest_cov   <- -0.3   # more interest coverage / higher cash flows = less risk
   beta_sector2        <-  0.2   # manufacturing vs services
   beta_sector3        <-  0.35  # construction vs services — higher risk
-  beta_firm_age       <- -0.1
+  beta_firm_age       <- -0.1   # older companies - less risk
   beta_crefo          <-  0.3   # higher Crefo score → higher default risk
   
   # ============================================================
@@ -441,6 +441,7 @@ result <- simulate_clean_data_panel()
 
 dat    <- result$data
 mean(dat$default)  # default rate check - should be near the "truth"
+
 ```
 
 
@@ -607,7 +608,7 @@ impair_mnar <- function(dat, severity = "mild") {
   #
   # Persistence: once a firm's interest_cov goes missing in a given year,
   # it remains missing for all subsequent years of that firm's life. This
-  # reflects real reporting behaviour — a firm that stops disclosing bad
+  # reflects real reporting behavior — a firm that stops disclosing bad
   # financials does not voluntarily resume disclosure.
   #
   # Intercepts tuned to achieve overall missing rates comparable to
@@ -694,7 +695,7 @@ dat_mnar_severe <- impair_mnar(dat, severity = "severe")
 **Impairment 3: MAR**
 
 Due to younger firms not having a Crefo score
-MNAR because whether a value is missing depends on an observed variable (here = firm_age)
+MAR because whether a value is missing depends on an observed variable (here = firm_age)
 
 Explanation of what happens in this function:
 - first: taking in data, scaling from clean variables, severity
@@ -1290,6 +1291,15 @@ ggplot(frs_summary$by_variable[frs_summary$by_variable$type != "none", ],
 
 ```
 
+
+Score
+Bewertung
+>95 %: sehr hohe Datenqualität
+90–95 %: gute Datenqualität
+80–90 %: mittlere Datenqualität
+<80 %: kritische Datenqualität
+
+------------------------------------------------
 
 Last step before modeling:
 ## Data preparation

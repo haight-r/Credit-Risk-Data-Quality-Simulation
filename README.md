@@ -54,7 +54,7 @@ Most features are standardized to allow anchoring after data impairments.
 
 ## Stage 2: Data Destruction
 
-### Part 2a: MCAR (Missing Completely at Random)
+### Impairment 1: MCAR (Missing Completely at Random)
 
 **Idea:**  
 Financials are missing with no systematic reason.
@@ -69,7 +69,7 @@ Financials are missing with no systematic reason.
 
 ---
 
-### Part 2b: MNAR (Missing Not at Random)
+### Impairment 2: MNAR (Missing Not at Random)
 
 **Idea:**  
 Missingness depends on the variable itself.
@@ -84,7 +84,7 @@ Missingness depends on the variable itself.
 
 ---
 
-### Part 2c: MAR (Missing at Random)
+### Impairment 3: MAR (Missing at Random)
 
 **Idea:**  
 Missingness depends on observed variables.
@@ -97,7 +97,7 @@ Missingness depends on observed variables.
 
 ---
 
-### Part 2d: Measurement Noise
+### Impairment 4: Measurement Noise
 
 **Idea:**  
 Financials contain random measurement error.
@@ -110,7 +110,7 @@ Financials contain random measurement error.
 
 ---
 
-### Part 2e: Implausible Values
+### Impairment 5: Implausible Values
 
 **Idea:**  
 Data may contain impossible or extreme values.
