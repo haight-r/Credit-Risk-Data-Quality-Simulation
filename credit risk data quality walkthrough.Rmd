@@ -442,6 +442,10 @@ result <- simulate_clean_data_panel()
 dat    <- result$data
 mean(dat$default)  # default rate check - should be near the "truth"
 
+
+# For later: record what our PD formula is
+pd_formula <- default ~ log_assets_z + debt_to_equity_z + interest_cov_z +
+                             firm_age_z + crefo_z + sector_2 + sector_3
 ```
 
 
@@ -596,6 +600,8 @@ dat_mcar_severe <- impair_mcar(dat, severity = "severe")
 
 
 **Impairment 2: MNAR**
+
+Due to firms with bad financials (in this case, interest_cov) not reporting their financials
 
 ```{r}
 
@@ -1022,13 +1028,11 @@ dat_impl_severe <- impair_implausible(dat, severity = "severe")
 # dat_mnar_mild,    dat_mnar_severe
 # dat_noise_mild,   dat_noise_severe
 # dat_impl_mild,    dat_impl_severe
-# scaling <- attr(dat, "scaling")
-
-
-scaling <- attr(result, "scaling")
 
 
 # ── 1. Missing rates (MCAR MAR & MNAR) ────────────────────────────────────────
+
+# Within the expected column! E.g. MAR only for CREFO, MNAR only for Interest Coverage
 
 cat("=== Missing Rates ===\n")
 cat("MCAR mild:  ", round(mean(is.na(dat_mcar_mild$interest_cov)), 3),  "\n")
@@ -1119,12 +1123,17 @@ for (v in c("log_assets", "debt_to_equity", "interest_cov")) {
 }
 
 # ── 5b. Visual distributions: Implausible ─────────────────────────────────
-par(mfrow = c(3, 3), mar = c(4, 4, 2, 1))
 
+par(mfrow = c(1, 3), mar = c(5, 4, 3, 1))
 for (v in c("log_assets", "debt_to_equity", "interest_cov")) {
-  hist(dat[[v]],              main = paste("Clean -", v),           xlab = v, col = "grey90")
-  hist(dat_impl_mild[[v]],    main = paste("Implaus mild -", v),    xlab = v, col = "lightyellow")
-  hist(dat_impl_severe[[v]],  main = paste("Implaus severe -", v),  xlab = v, col = "orange")
+  boxplot(
+    dat[[v]], dat_impl_mild[[v]], dat_impl_severe[[v]],
+    names  = c("Clean", "Mild", "Severe"),
+    main   = v,
+    col    = c("grey80", "lightyellow", "orange"),
+    outline = TRUE,   # show outlier dots
+    las    = 2
+  )
 }
 ```
 
@@ -1307,7 +1316,19 @@ Last step before modeling:
 
 ```{r}
 
-prepare_for_modeling <- function(dat, scaling, method = "median") {
+prepare_for_modeling <- function(dat, scaling, method = "regression",
+                                 model_formula = NULL, label = NULL) {
+  
+    # Auto-generate label from impairment metadata if not provided
+  if (is.null(label)) {
+    imp_meta <- attr(dat, "impairment")
+    if (!is.null(imp_meta)) {
+      label <- paste(imp_meta$type, imp_meta$severity)
+    } else {
+      label <- "unlabeled"
+    }
+  }
+  
   
   # Preparation function: sits between impairment and model fitting.
   # Handles two tasks:
@@ -1315,6 +1336,14 @@ prepare_for_modeling <- function(dat, scaling, method = "median") {
   #   2. Recompute _z columns using clean scaling parameters
   #
   # The method argument controls the imputation strategy:
+  #   "regression" — regression-based single imputation (default).
+  #              Fits logistic regression on complete cases, then for each
+  #              row with missingness, solves the linear predictor equation
+  #              backwards for the missing z-score, anchored to the overall
+  #              sample default rate. Produces firm-specific imputed values
+  #              that are consistent with the model's covariate structure.
+  #              Recommended by Risk Research as their standard approach.
+  #              Requires model_formula to be specified.
   #   "median" — univariate median imputation (PD-neutral baseline;
   #              maps to ~z=0 after standardisation, adding approximately
   #              zero to the linear predictor). Standard practitioner
@@ -1340,7 +1369,90 @@ prepare_for_modeling <- function(dat, scaling, method = "median") {
   
   if (has_missing) {
     
-    if (method == "median") {
+    if (method == "regression") {
+      
+      # --- Regression-based single imputation ---
+      # Uses the PD model fitted on complete cases to back-solve for
+      # missing predictor values. For each row with missingness, the
+      # target PD is set to the overall sample default rate, and the
+      # missing z-score is solved algebraically from the logistic
+      # regression linear predictor.
+      
+      if (is.null(model_formula)) {
+        stop("model_formula is required for regression-based imputation.")
+      }
+      
+      outcome_var <- all.vars(model_formula)[1]
+      predictor_vars <- all.vars(model_formula)[-1]
+      
+      # Fit on complete cases
+      complete_idx <- complete.cases(dat_prepared[, c(outcome_var, predictor_vars)])
+      n_complete <- sum(complete_idx)
+      
+      if (n_complete < 50) {
+        warning("Fewer than 50 complete cases — regression-based imputation may be unstable.")
+      }
+      
+      model_fit <- glm(model_formula, data = dat_prepared[complete_idx, ],
+                        family = binomial())
+      betas <- coef(model_fit)
+      
+      # Target: overall default rate from complete cases
+      target_p <- mean(dat_prepared[[outcome_var]][complete_idx], na.rm = TRUE)
+      target_logit <- log(target_p / (1 - target_p))
+      
+      # Impute each incomplete row
+      incomplete_idx <- which(!complete_idx & !is.na(dat_prepared[[outcome_var]]))
+      z_cap <- 4
+      
+      for (i in incomplete_idx) {
+        missing_vars <- predictor_vars[is.na(dat_prepared[i, predictor_vars])]
+        if (length(missing_vars) == 0) next
+        
+        # Sequential imputation: solve one variable at a time
+        for (mv in missing_vars) {
+          currently_observed <- predictor_vars[!is.na(dat_prepared[i, predictor_vars])]
+          
+          eta_partial <- betas["(Intercept)"]
+          for (ov in currently_observed) {
+            eta_partial <- eta_partial + betas[ov] * as.numeric(dat_prepared[i, ov])
+          }
+          
+          beta_mv <- betas[mv]
+          
+          if (!is.na(beta_mv) && abs(beta_mv) > 1e-8) {
+            imputed_val <- as.numeric((target_logit - eta_partial) / beta_mv)
+            imputed_val <- pmax(pmin(imputed_val, z_cap), -z_cap)
+          } else {
+            # beta ≈ 0: variable has no predictive power, fall back to z-score mean
+            imputed_val <- 0
+          }
+          
+          dat_prepared[i, mv] <- imputed_val
+          
+          # Write back corresponding raw variable so z-score recomputation
+          # at the end of this function stays consistent
+          raw_var <- sub("_z$", "", mv)
+          if (raw_var %in% names(scaling) && raw_var %in% names(dat_prepared)) {
+            dat_prepared[i, raw_var] <- scaling[[raw_var]]["mean"] +
+                                        imputed_val * scaling[[raw_var]]["sd"]
+          }
+        }
+      }
+      
+      # Count total missing cells for diagnostics
+      n_missing_cells <- sum(is.na(dat[, predictor_vars]))
+      
+
+      cat(sprintf("[%s] Regression-based imputation: %d rows (%.1f%%) | %d cells imputed\n",
+                  ifelse(is.null(label), "unlabeled", label),
+                  length(incomplete_idx), 100 * length(incomplete_idx) / nrow(dat_prepared),
+                  n_missing_cells))
+      cat(sprintf("  Target PD: %.4f (logit: %.3f) | Complete cases for fit: %d\n",
+            target_p, target_logit, n_complete))
+      
+      
+    } else if (method == "median") {
       
       for (var in imputable_vars) {
         n_missing <- sum(is.na(dat_prepared[[var]]))
@@ -1356,19 +1468,12 @@ prepare_for_modeling <- function(dat, scaling, method = "median") {
       
       require(mice)
       
-      # Select only the raw predictor columns for imputation
-      # Exclude _z columns, metadata columns, and the outcome variable
       mice_vars <- imputable_vars[imputable_vars %in% names(dat_prepared)]
-      
-      # Also include sector dummies and default as predictors for the
-      # imputation model (they help MICE predict missing values) but
-      # they themselves have no missingness
       mice_cols <- c(mice_vars, "sector_2", "sector_3", "default")
       mice_cols <- mice_cols[mice_cols %in% names(dat_prepared)]
       
       mice_input <- dat_prepared[, mice_cols]
       
-      # Report what's missing before imputation
       for (var in imputable_vars) {
         n_missing <- sum(is.na(dat_prepared[[var]]))
         if (n_missing > 0) {
@@ -1376,13 +1481,10 @@ prepare_for_modeling <- function(dat, scaling, method = "median") {
         }
       }
       
-      # Run MICE: m=1 because MC replications handle uncertainty;
-      # pmm (predictive mean matching) preserves distribution shape
       imp <- mice(mice_input, m = 1, method = "pmm", maxit = 5,
                   printFlag = FALSE)
       completed <- complete(imp, 1)
       
-      # Write imputed values back into the main dataframe
       for (var in mice_vars) {
         dat_prepared[[var]] <- completed[[var]]
       }
@@ -1415,30 +1517,56 @@ prepare_for_modeling <- function(dat, scaling, method = "median") {
 
 ```
 
-Fixing the data: with the default method of median imputation
+
+```{r}
+dat_mcar_mild_prepped <- prepare_for_modeling(dat_mcar_mild, result$scaling,
+                          method = "regression", model_formula = pd_formula)
+
+# Should both be zero now
+cat("Remaining NAs in log_assets:", sum(is.na(dat_mcar_mild_prepped$log_assets)), "\n")
+cat("Remaining NAs in log_assets_z:", sum(is.na(dat_mcar_mild_prepped$log_assets_z)), "\n")
+```
+
+
+
+
+Fixing the data: with the default method of regression (? what do you call it) imputation
 ```{r}
 
 # ── Prepare all impaired datasets for modeling ─────────────────────────────
 
-# Missingness conditions: impute NAs + recompute z-scores
-dat_mcar_mild_prepped   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, method = "median")
-dat_mcar_severe_prepped <- prepare_for_modeling(dat_mcar_severe, result$scaling, method = "median")
-dat_mar_mild_prepped    <- prepare_for_modeling(dat_mar_mild,    result$scaling, method = "median")
-dat_mar_severe_prepped  <- prepare_for_modeling(dat_mar_severe,  result$scaling, method = "median")
-dat_mnar_mild_prepped   <- prepare_for_modeling(dat_mnar_mild,   result$scaling, method = "median")
-dat_mnar_severe_prepped <- prepare_for_modeling(dat_mnar_severe, result$scaling, method = "median")
+# Missingness conditions: impute NAs using the default regression technique + recompute z-scores
+
+
+
+# now this can be prepared
+dat_mcar_mild_prepped   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, method = "regression", model_formula = pd_formula)
+dat_mcar_severe_prepped <- prepare_for_modeling(dat_mcar_severe, result$scaling, method = "regression", model_formula = pd_formula)
+dat_mar_mild_prepped    <- prepare_for_modeling(dat_mar_mild,    result$scaling, method = "regression", model_formula = pd_formula)
+dat_mar_severe_prepped  <- prepare_for_modeling(dat_mar_severe,  result$scaling, method = "regression", model_formula = pd_formula)
+dat_mnar_mild_prepped   <- prepare_for_modeling(dat_mnar_mild,   result$scaling, method = "regression", model_formula = pd_formula)
+dat_mnar_severe_prepped <- prepare_for_modeling(dat_mnar_severe, result$scaling, method = "regression", model_formula = pd_formula)
 
 # Noise and implausible: no NAs to impute, but z-scores get recomputed
-dat_noise_mild_prepped   <- prepare_for_modeling(dat_noise_mild,   result$scaling, method = "median")
-dat_noise_severe_prepped <- prepare_for_modeling(dat_noise_severe, result$scaling, method = "median")
-dat_impl_mild_prepped    <- prepare_for_modeling(dat_impl_mild,    result$scaling, method = "median")
-dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe,  result$scaling, method = "median")
-
+dat_noise_mild_prepped   <- prepare_for_modeling(dat_noise_mild,   result$scaling, method = "regression")
+dat_noise_severe_prepped <- prepare_for_modeling(dat_noise_severe, result$scaling, method = "regression")
+dat_impl_mild_prepped    <- prepare_for_modeling(dat_impl_mild,    result$scaling, method = "regression")
+dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe,  result$scaling, method = "regression")
 
 ```
 
-Sidequest: what happens if we use mice?
+Sidequest 1: what happens if we use median or mice?
 ```{r}
+
+# Missingness conditions: impute NAs + recompute z-scores
+dat_mcar_mild_prepped_med   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, method = "median")
+dat_mcar_severe_prepped_med <- prepare_for_modeling(dat_mcar_severe, result$scaling, method = "median")
+dat_mar_mild_prepped_med    <- prepare_for_modeling(dat_mar_mild,    result$scaling, method = "median")
+dat_mar_severe_prepped_med  <- prepare_for_modeling(dat_mar_severe,  result$scaling, method = "median")
+dat_mnar_mild_prepped_med   <- prepare_for_modeling(dat_mnar_mild,   result$scaling, method = "median")
+dat_mnar_severe_prepped_med <- prepare_for_modeling(dat_mnar_severe, result$scaling, method = "median")
+
+
 
 
 # Missingness conditions: impute NAs + recompute z-scores
@@ -1459,13 +1587,23 @@ Comparing FRS across imputation methods for missingness
 
 ```{r}
 
-median_list <- list(
+regr_list <- list(
   mcar_mild   = dat_mcar_mild_prepped,
   mcar_severe = dat_mcar_severe_prepped,
   mar_mild    = dat_mar_mild_prepped,
   mar_severe  = dat_mar_severe_prepped,
   mnar_mild   = dat_mnar_mild_prepped,
   mnar_severe = dat_mnar_severe_prepped
+)
+
+
+median_list <- list(
+  mcar_mild   = dat_mcar_mild_prepped_med,
+  mcar_severe = dat_mcar_severe_prepped_med,
+  mar_mild    = dat_mar_mild_prepped_med,
+  mar_severe  = dat_mar_severe_prepped_med,
+  mnar_mild   = dat_mnar_mild_prepped_med,
+  mnar_severe = dat_mnar_severe_prepped_med
 )
 
 mice_list <- list(
@@ -1477,7 +1615,7 @@ mice_list <- list(
   mnar_severe = dat_mnar_severe_prepped_mice
 )
 
-frs_compare <- compare_frs_imputation(dat, impaired_list, median_list, mice_list)
+frs_compare <- compare_frs_imputation(dat, impaired_list, regr_list, median_list, mice_list)
 frs_compare
 
 
@@ -1499,10 +1637,11 @@ ggplot(frs_summary, aes(x = stage, y = frs, fill = stage)) +
   geom_col() +
   geom_text(aes(label = round(frs, 3)), vjust = -0.3, size = 3) +
   facet_grid(severity ~ type) +
-  scale_fill_manual(values = c(clean    = "grey70",
-                               impaired = "#e74c3c",
-                               median   = "#f39c12",
-                               mice     = "#2ecc71")) +
+  scale_fill_manual(values = c(clean      = "grey70",
+                               impaired   = "#e74c3c",
+                               regression = "#3498db",
+                               median     = "#f39c12",
+                               mice       = "#2ecc71")) +
   labs(title    = "FRS Recovery by Imputation Method",
        subtitle = "How well does each method restore data quality?",
        y = "Mean FRS", x = NULL) +
@@ -1529,10 +1668,11 @@ ggplot(frs_comp_summary[frs_comp_summary$severity == "severe", ],
        aes(x = stage, y = score, fill = stage)) +
   geom_col() +
   facet_grid(component ~ type) +
-  scale_fill_manual(values = c(clean    = "grey70",
-                               impaired = "#e74c3c",
-                               median   = "#f39c12",
-                               mice     = "#2ecc71")) +
+  scale_fill_manual(values = c(clean      = "grey70",
+                               impaired   = "#e74c3c",
+                               regression = "#3498db",
+                               median     = "#f39c12",
+                               mice       = "#2ecc71")) +
   labs(title    = "FRS Components: Severe Impairment",
        subtitle = "Completeness should recover; watch plausibility and outliers",
        y = "Score", x = NULL) +

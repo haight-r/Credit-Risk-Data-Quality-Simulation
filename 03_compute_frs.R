@@ -378,6 +378,7 @@ print_frs <- function(frs_df, digits = 3) {
 #
 # Builds a stacked FRS data frame with three stages per condition:
 #   - impaired: after missingness is applied, before any imputation
+#   - regression: after regression imputation
 #   - median:   after median imputation
 #   - mice:     after MICE imputation
 #
@@ -387,6 +388,7 @@ print_frs <- function(frs_df, digits = 3) {
 
 compare_frs_imputation <- function(dat_clean,
                                    impaired_list,
+                                   regr_list,
                                    median_list,
                                    mice_list) {
   
@@ -418,6 +420,7 @@ compare_frs_imputation <- function(dat_clean,
   }
   
   add_stage(impaired_list, "impaired")
+  add_stage(regr_list, "regression")
   add_stage(median_list,   "median")
   add_stage(mice_list,     "mice")
   
@@ -426,6 +429,6 @@ compare_frs_imputation <- function(dat_clean,
   
   # Order stages for plotting
   out$stage <- factor(out$stage,
-                      levels = c("clean", "impaired", "median", "mice"))
+                      levels = c("clean", "impaired", "regression", "median", "mice"))
   out
 }
