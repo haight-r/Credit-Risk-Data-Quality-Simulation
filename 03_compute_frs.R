@@ -44,22 +44,23 @@ compute_frs <- function(dat,
                                  "interest_cov", "firm_age",
                                  "crefo"),
                         plausibility_bounds = NULL,
-                        outlier_method      = "iqr",
+                        outlier_method      = "percentile",
                         outlier_k           = 3,
+                        winsor_bounds       = NULL,
                         consistency_rules   = NULL) {
   
   # ---- 0. Defaults --------------------------------------------------------
   
-  # Plausibility bounds: domain-valid ranges for each predictor.
-  # These reflect credit-risk domain knowledge -- a practitioner would
-  # define these from business rules, not from the data itself (Sec. 8.6.3).
+  # Plausibility bounds (Sec. 8.6): "can this value exist?"
+  # Wider than outlier bounds — 1st/99th percentiles from clean data.
+  # Falls back to basic domain rules if not provided.
   if (is.null(plausibility_bounds)) {
     plausibility_bounds <- list(
-      log_assets     = c(0, 20),       # ln(assets): 0 ~ $1, 20 ~ $500M
-      debt_to_equity = c(0, Inf),      # leverage ratio cannot be negative
-      interest_cov   = c(0, Inf),      # coverage ratio cannot be negative
-      firm_age       = c(0, Inf),      # age cannot be negative
-      crefo          = c(100, 600)     # Creditreform Bonitaetsindex range
+      log_assets     = c(0, 20),
+      debt_to_equity = c(0, Inf),
+      interest_cov   = c(0, Inf),
+      firm_age       = c(0, Inf),
+      crefo          = c(100, 600)
     )
   }
   
@@ -173,18 +174,26 @@ compute_frs <- function(dat,
     }
     
     # --- 1c. Outlier Score (Sec. 8.8.1) ---
+    # Igl & Gruber (Ch. 9) present multiple methods; Ch. 9.2 notes that
+    # IQR assumptions break down for skewed distributions — relevant here
+    # since debt_to_equity, interest_cov, and firm_age are zero-bounded
+    # and right-skewed. The percentile method uses portfolio-calibrated
+    # bounds (same as winsorizing cutoffs), consistent with RR's
+    # tail-based approach. Z-score retained as an alternative.
     if (n_obs > 0) {
-      if (outlier_method == "iqr") {
-        q1  <- quantile(x_obs, 0.25)
-        q3  <- quantile(x_obs, 0.75)
-        iqr <- q3 - q1
-        n_outlier <- sum(x_obs < (q1 - outlier_k * iqr) |
-                           x_obs > (q3 + outlier_k * iqr))
+      if (outlier_method == "percentile") {
+        if (is.null(winsor_bounds) || !(v %in% names(winsor_bounds))) {
+          stop(sprintf("winsor_bounds required for percentile method (variable: %s)", v))
+        }
+        b <- winsor_bounds[[v]]
+        n_outlier <- sum(x_obs < b["lower"] | x_obs > b["upper"])
+        
       } else if (outlier_method == "zscore") {
         z_vals    <- (x_obs - mean(x_obs)) / sd(x_obs)
         n_outlier <- sum(abs(z_vals) > outlier_k)
+        
       } else {
-        stop("outlier_method must be 'iqr' or 'zscore'")
+        stop("outlier_method must be 'percentile' or 'zscore'")
       }
       s_outlier <- 1 - n_outlier / n_obs
     } else {
@@ -256,9 +265,11 @@ compute_frs <- function(dat,
 # Convenience wrapper: compute FRS for clean + all impaired datasets at once
 # ============================================================================
 
-compute_frs_all <- function(dat_clean, impaired_list) {
+compute_frs_all <- function(dat_clean, impaired_list, winsor_bounds, 
+                            plausibility_bounds) {
   
-  frs_clean       <- compute_frs(dat_clean)
+  frs_clean <- compute_frs(dat_clean, winsor_bounds = winsor_bounds,
+                           plausibility_bounds = plausibility_bounds)
   frs_clean$var   <- rownames(frs_clean)
   frs_clean$condition <- "clean"
   frs_clean$type     <- "none"
@@ -269,7 +280,8 @@ compute_frs_all <- function(dat_clean, impaired_list) {
   for (nm in names(impaired_list)) {
     d   <- impaired_list[[nm]]
     
-    frs <- compute_frs(d)
+    frs <- compute_frs(d, winsor_bounds = winsor_bounds,
+                       plausibility_bounds = plausibility_bounds)
     frs$var       <- rownames(frs)
     frs$condition <- nm
     
@@ -284,7 +296,6 @@ compute_frs_all <- function(dat_clean, impaired_list) {
   rownames(out) <- NULL
   out
 }
-
 
 
 # ============================================================================
@@ -386,14 +397,12 @@ print_frs <- function(frs_df, digits = 3) {
 # imputation is relevant (noise and implausible values aren't missing data).
 # ============================================================================
 
-compare_frs_imputation <- function(dat_clean,
-                                   impaired_list,
-                                   regr_list,
-                                   median_list,
-                                   mice_list) {
+compare_frs_imputation <- function(dat_clean, impaired_list,
+                                   regr_list, median_list, mice_list,
+                                   winsor_bounds, plausibility_bounds) {
   
-  # Clean baseline
-  frs_clean           <- compute_frs(dat_clean)
+  frs_clean <- compute_frs(dat_clean, winsor_bounds = winsor_bounds,
+                           plausibility_bounds = plausibility_bounds)
   frs_clean$var       <- rownames(frs_clean)
   frs_clean$condition <- "clean"
   frs_clean$type      <- "none"
@@ -402,11 +411,11 @@ compare_frs_imputation <- function(dat_clean,
   
   all_frs <- list(frs_clean)
   
-  # Helper to process a list of datasets at a given stage
   add_stage <- function(dat_list, stage_label) {
     for (nm in names(dat_list)) {
       d   <- dat_list[[nm]]
-      frs <- compute_frs(d)
+      frs <- compute_frs(d, winsor_bounds = winsor_bounds,
+                         plausibility_bounds = plausibility_bounds)
       frs$var       <- rownames(frs)
       frs$condition <- nm
       frs$stage     <- stage_label
@@ -427,7 +436,6 @@ compare_frs_imputation <- function(dat_clean,
   out <- do.call(rbind, all_frs)
   rownames(out) <- NULL
   
-  # Order stages for plotting
   out$stage <- factor(out$stage,
                       levels = c("clean", "impaired", "regression", "median", "mice"))
   out

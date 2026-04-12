@@ -6,14 +6,12 @@ date: "2026-03-02"
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-
 ```
 
 # Part 0: Helper functions and setup 
 
 ```{r}
 source("02_helperfunctions.R")
-
 
 required_packages <- c("ggplot2", "dplyr", "tidyr", "mice")
 
@@ -52,8 +50,6 @@ d) debt to equity: higher leverage is more dangerous --> dependent on how big th
 e) interest_cov: proxy for cash flow 
 f) NEW -- ADDED -- Crefo score. Dependent on most things above. Sometimes gets lagged (not updated every year)
 
-3.25.26: potential to swap out interest_cov for the Mahnung flag
-
 ----------------------------------------------------------
 
 Step 3: we have to standardize features for the true model (DGP)
@@ -62,7 +58,6 @@ Step 3: we have to standardize features for the true model (DGP)
 - use those parameters to standardize later on
 
 We do it manually rather than just calling scale() because later, when you introduce impairments, you need to apply these exact same parameters to the impaired data — if you let the impaired data rescale itself, the impairment shifts the mean/SD and you'd be confounding two effects at once.
-
 
 ----------------------------------------------------------
 
@@ -399,6 +394,41 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
   # PHASE 5: RETURN
   # ============================================================
   
+  # Winsorizing bounds from clean data — used by prepare_for_modeling()
+  # to cap extremes before imputation. Same discipline as scaling:
+  # the clean world defines what "extreme" means.
+  winsor_bounds <- list(
+    log_assets     = c(lower = as.numeric(quantile(panel$log_assets, 0.025)),
+                       upper = as.numeric(quantile(panel$log_assets, 0.975))),
+    debt_to_equity = c(lower = 0,
+                       upper = as.numeric(quantile(panel$debt_to_equity, 0.95))),
+    interest_cov   = c(lower = 0,
+                       upper = as.numeric(quantile(panel$interest_cov, 0.95))),
+    firm_age       = c(lower = 0,
+                       upper = as.numeric(quantile(panel$firm_age, 0.95))),
+    crefo          = c(lower = as.numeric(quantile(panel$crefo, 0.025)),
+                       upper = as.numeric(quantile(panel$crefo, 0.975)))
+  )
+  
+  
+  # Plausibility bounds from clean data — wider than winsorizing cutoffs.
+  # These represent "can this value exist in this domain?" rather than
+  # "is this value typical?" (which is what winsor_bounds/outlier captures).
+  # Using 1st/99th percentiles for two-sided variables, 99th for one-sided.
+  # Igl (Sec. 8.6): plausibility requires domain knowledge; these empirical
+  # bounds operationalize a practitioner's sense of "what's possible."
+  plausibility_bounds_empirical <- list(
+    log_assets     = c(as.numeric(quantile(panel$log_assets, 0.01)),
+                       as.numeric(quantile(panel$log_assets, 0.99))),
+    debt_to_equity = c(0,
+                       as.numeric(quantile(panel$debt_to_equity, 0.99))),
+    interest_cov   = c(0,
+                       as.numeric(quantile(panel$interest_cov, 0.99))),
+    firm_age       = c(0,
+                       as.numeric(quantile(panel$firm_age, 0.99))),
+    crefo          = c(100, 600)   # hard domain bounds from Creditreform index
+  )
+  
   list(
     data = panel,
     scaling = list(
@@ -408,6 +438,8 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
       firm_age       = c(mean = firm_age_mean,        sd = firm_age_sd),
       crefo          = c(mean = crefo_mean,           sd = crefo_sd)    # NEW
     ),
+    winsor_bounds = winsor_bounds,
+    plausibility_bounds = plausibility_bounds_empirical,  
     true_betas = c(
       intercept       = beta0,
       log_assets      = beta_log_assets,
@@ -422,13 +454,11 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
 }
 
 
-
 ```
 
 ## Simulation
 
 This creates one synthetic dataset with 5000 businesses / around 20k rows
-
 And tests the default rate -- should be around 1-5%
 
 
@@ -446,6 +476,8 @@ mean(dat$default)  # default rate check - should be near the "truth"
 # For later: record what our PD formula is
 pd_formula <- default ~ log_assets_z + debt_to_equity_z + interest_cov_z +
                              firm_age_z + crefo_z + sector_2 + sector_3
+
+
 ```
 
 
@@ -510,10 +542,11 @@ For our indicator variables except for sector.
 Because this is on clean data, we should expect the scores to be near 1 (perfect quality)
 
 ```{r}
-
 source("03_compute_frs.R")
 
-frs_clean <- compute_frs(dat)
+frs_clean <- compute_frs(dat,
+                         winsor_bounds       = result$winsor_bounds,
+                         plausibility_bounds = result$plausibility_bounds)
 print_frs(frs_clean)
 
 ```
@@ -533,8 +566,6 @@ Explanation of what happens in this function:
 - identify the inancial variables that will get missingness  / apply same impairment logic to each one
 - actual mcar mechanism. flip a weighted coin for each of the n firms — it returns 1 (missing) with probability miss_prob and 0 (observed) with probability 1 - miss_prob. The == 1 converts that into a logical vector of TRUE/FALSE, where TRUE means that firm's value will be set to missing. Every firm has exactly the same probability of being missing regardless of anything else about them — that's what makes it MCAR.
 - where "missing idx" is true (1), replace with NAs
-- for now: mean imputation with the scaling clean mean
-- rescale
 - metadata: attaching tags to an object without making columns in a dataframe
 - return the impaired dataset
 
@@ -592,7 +623,9 @@ Running the MCAR function to create "mild" and "severe" impaired data
 
 ```{r}
 
+cat("Mild MCAR impairment:\n")
 dat_mcar_mild   <- impair_mcar(dat, severity = "mild")
+cat("\nSevere MCAR impairment:\n")
 dat_mcar_severe <- impair_mcar(dat, severity = "severe")
 
 
@@ -689,14 +722,14 @@ impair_mnar <- function(dat, severity = "mild") {
 ```
 
 ```{r}
-
+cat("Mild MNAR impairment:\n")
 dat_mnar_mild   <- impair_mnar(dat, severity = "mild")
+
+cat("\nSevere MNAR impairment:\n")
 dat_mnar_severe <- impair_mnar(dat, severity = "severe")
 
 
 ```
-
-
 
 **Impairment 3: MAR**
 
@@ -770,7 +803,10 @@ impair_mar <- function(dat, severity = "mild") {
 
 ```{r}
 
+cat("Mild MAR impairment:\n")
 dat_mar_mild   <- impair_mar(dat, severity = "mild")
+
+cat("\nSevere MAR impairment:\n")
 dat_mar_severe <- impair_mar(dat, severity = "severe")
 
 
@@ -778,9 +814,7 @@ dat_mar_severe <- impair_mar(dat, severity = "severe")
 ```
 
 
-
-
-**Impairment 3: Measurement Noise**
+**Impairment 4: Measurement Noise**
 
 What is happening here:
 - our function takes in clean data, scaling data, and which severity (defaulted to "mild")
@@ -790,9 +824,7 @@ What is happening here:
 - Designating only a few "noise variables" (firm age not getting noise - confirm)
 - Cycling through all the variables: pull the clean SD from "scaling", generate N draws from a normal distribution centered around zero. Adding to each variable * multiplier for mild / severe
 - Print impairment per variable 
-- rescale using clean parameters -- isolating impairment effect from any scale effect. difference in model performance is due to nature of impairment
 - metadata tag on the new dataframe
-
 
 
 ```{r}
@@ -832,15 +864,6 @@ impair_noise <- function(dat, scaling, severity = "mild") {
     ))
   }
   
-  # Rescale using clean parameters for MEAN ONLY
-for (v in noise_vars) {
-  z_name <- paste0(v, "_z")
-  dat_impaired[[z_name]] <- rescale_mean_only(
-    dat_impaired[[v]],
-    scaling[[v]]
-  )
-}
-  
   # Tag with metadata
   attr(dat_impaired, "impairment") <- list(
     type               = "noise",
@@ -857,20 +880,17 @@ for (v in noise_vars) {
 ```
 
 
-
 Creating the actual datasets
 
 ```{r}
-
+cat("Mild noise impairment:\n")
 dat_noise_mild   <- impair_noise(dat, result$scaling, severity = "mild")
+cat("\nSevere noise impairment:\n")
 dat_noise_severe <- impair_noise(dat, result$scaling, severity = "severe")
 ```
 
 
-
-
-
-**Impairment 4: Implausible Values**
+**Impairment 5: Implausible Values**
 
 What is happening:
 - Taking same inputs of clean data, scaling, severity
@@ -885,8 +905,6 @@ What is happening:
       - `%.0f` ← `corrupt_rate * 100` (e.g. `5`)
       - `%.2f` ← `implausible_values[[v]]` (e.g. `12.34`)
 - no rescale (mean and sd)
-
-
 
 ```{r}
 
@@ -1000,24 +1018,20 @@ impair_implausible <- function(dat, severity = "mild") {
   dat_impaired
 }
 
-
-
 ```
 
 Creating the datasets
 ```{r}
-
+cat("Mild implausible impairment:\n")
 dat_impl_mild   <- impair_implausible(dat, severity = "mild")
+
+cat("\nSevere implausible impairment:\n")
 dat_impl_severe <- impair_implausible(dat, severity = "severe")
 
 
 ```
 
 ## Doublechecking the functions before modeling
-
-
-- this is where "scaling" randomly becomes null...??
-- option to run this in another script...
 
 ```{r}
 # ── Sanity Checks: All Impairment Functions ────────────────────────────────
@@ -1045,8 +1059,9 @@ cat("MNAR severe:", round(mean(is.na(dat_mnar_severe$interest_cov)), 3), "\n")
 
 ```
 
-
 ```{r}
+
+# ──  MNAR getting worse by int_cov quartile ─────────────────────────
 cat("\n=== MNAR: Missing Rate by Interest Coverage Quartile ===\n")
 ic_bins <- cut(dat$interest_cov, breaks = 4)
 
@@ -1075,38 +1090,27 @@ for (v in noise_vars) {
 }
 ```
 
-
 ```{r}
+
 # ── 4. Implausible values are present ─────────────────────────────────────
 
-cat("\n=== Implausible: Summary of Affected Variables ===\n")
+cat("\n=== Implausible: Range Summary of Affected Variables ===\n")
 impl_vars <- c("log_assets", "debt_to_equity", "interest_cov", "firm_age")
 
 for (v in impl_vars) {
   cat(sprintf("\n%s:\n", v))
-  cat("  mild max:  ", round(max(dat_impl_mild[[v]]),  2), "\n")
-  cat("  severe max:", round(max(dat_impl_severe[[v]]), 2), "\n")
+  cat("  mild:   min =", round(min(dat_impl_mild[[v]]),  2),
+              " max =", round(max(dat_impl_mild[[v]]),  2), "\n")
+  cat("  severe: min =", round(min(dat_impl_severe[[v]]), 2),
+              " max =", round(max(dat_impl_severe[[v]]), 2), "\n")
 }
-
-for (v in impl_vars) {
-  cat(sprintf("\n%s:\n", v))
-  cat("  mild min:  ", round(min(dat_impl_mild[[v]]),  2), "\n")
-  cat("  severe min:", round(min(dat_impl_severe[[v]]), 2), "\n")
-}
-
 
 # Domain-invalid checks
-cat("\nNegative debt_to_equity — mild: ",
-  round(mean(dat_impl_mild$debt_to_equity < 0), 3),  
-  "| severe:", 
-  round(mean(dat_impl_severe$debt_to_equity < 0), 3), "\n")
-# not going to see anything notable for firm age or assets (set to negative #s)
-
-
-cat("Negative firm_age — mild: ",
-  round(mean(dat_impl_mild$firm_age < 0), 3),  
-  "| severe:", 
-  round(mean(dat_impl_severe$firm_age < 0), 3), "\n")
+cat("\nDomain violations (proportion of rows):\n")
+cat("  Negative debt_to_equity — mild:", round(mean(dat_impl_mild$debt_to_equity   < 0), 3),
+                                "| severe:", round(mean(dat_impl_severe$debt_to_equity  < 0), 3), "\n")
+cat("  Negative firm_age       — mild:", round(mean(dat_impl_mild$firm_age          < 0), 3),
+                                "| severe:", round(mean(dat_impl_severe$firm_age         < 0), 3), "\n")
 
 
 ```
@@ -1114,6 +1118,7 @@ cat("Negative firm_age — mild: ",
 
 ```{r}
 # ── 5a. Visual distributions: Noise ───────────────────────────────────────
+
 par(mfrow = c(3, 3), mar = c(4, 4, 2, 1))
 
 for (v in c("log_assets", "debt_to_equity", "interest_cov")) {
@@ -1124,17 +1129,19 @@ for (v in c("log_assets", "debt_to_equity", "interest_cov")) {
 
 # ── 5b. Visual distributions: Implausible ─────────────────────────────────
 
-par(mfrow = c(1, 3), mar = c(5, 4, 3, 1))
+par(mfrow = c(1, 3), mar = c(5, 4, 3, 1), oma = c(0, 0, 3, 0))
 for (v in c("log_assets", "debt_to_equity", "interest_cov")) {
   boxplot(
     dat[[v]], dat_impl_mild[[v]], dat_impl_severe[[v]],
-    names  = c("Clean", "Mild", "Severe"),
-    main   = v,
-    col    = c("grey80", "lightyellow", "orange"),
-    outline = TRUE,   # show outlier dots
-    las    = 2
+    names   = c("Clean", "Mild", "Severe"),
+    main    = v,
+    col     = c("grey80", "lightyellow", "orange"),
+    outline = TRUE,
+    las     = 2
   )
 }
+mtext("Implausible Values Impairment: Distribution by Severity", 
+      outer = TRUE, cex = 1.1, font = 2, line = 1)
 ```
 
 
@@ -1247,10 +1254,6 @@ for (nm in c("dat_mar_mild", "dat_mar_severe")) {
 
 ## Feature reliability score on messed up data
 
-test
-ok the key takeaway is that this will never look all that impressive on data with just one impairment
-
-4/1: maybe do something with the FRS score to make it more sensitive?
 
 ```{r}
 
@@ -1267,7 +1270,9 @@ impaired_list <- list(
   impl_severe  = dat_impl_severe
 )
 
-frs_all <- compute_frs_all(dat, impaired_list)
+frs_all <- compute_frs_all(dat, impaired_list,
+                           winsor_bounds       = result$winsor_bounds,
+                           plausibility_bounds = result$plausibility_bounds)
 
 frs_summary <- summarize_frs(frs_all)
 
@@ -1316,7 +1321,7 @@ Last step before modeling:
 
 ```{r}
 
-prepare_for_modeling <- function(dat, scaling, method = "regression",
+prepare_for_modeling <- function(dat, scaling, winsor_bounds, method = "regression",
                                  model_formula = NULL, label = NULL) {
   
     # Auto-generate label from impairment metadata if not provided
@@ -1364,8 +1369,39 @@ prepare_for_modeling <- function(dat, scaling, method = "regression",
   # Variables that may have been impaired with missingness
   imputable_vars <- c("log_assets", "debt_to_equity", "interest_cov", "firm_age", "crefo")
   
+
+  # ---- Prep Part 1: Domain check + Winsorize (RR practitioner workflow) --------
+  # Applied to ALL impairment types, not just implausible values.
+  # A practitioner doesn't know the true impairment mechanism, so the
+  # same preparation pipeline runs uniformly on every dataset.
+  cat(sprintf("[%s] Data preparation:\n", label))
+  
+  dat_prepared <- domain_to_na(dat_prepared)
+  
+  # Propagate new NAs to _z columns
+  for (v in imputable_vars) {
+    z_col <- paste0(v, "_z")
+    if (z_col %in% names(dat_prepared)) {
+      dat_prepared[[z_col]][is.na(dat_prepared[[v]])] <- NA
+    }
+  }
+  
+  dat_prepared <- winsorize_vars(dat_prepared, winsor_bounds)
+  
+  # Count NAs here for diagnostics BEFORE imputation
+  predictor_vars_z <- paste0(imputable_vars, "_z")
+  predictor_vars_z <- predictor_vars_z[predictor_vars_z %in% names(dat_prepared)]
+  n_missing_cells_pre <- sum(is.na(dat_prepared[, predictor_vars_z]))
+  
   # Check if there are any NAs to impute
   has_missing <- any(sapply(imputable_vars, function(v) any(is.na(dat_prepared[[v]]))))
+  
+  
+  # ---- Prep Part 2: Imputation 3 ways --------
+  # ---- Regression (default), median, MICE ----
+  
+  
+
   
   if (has_missing) {
     
@@ -1441,13 +1477,13 @@ prepare_for_modeling <- function(dat, scaling, method = "regression",
       }
       
       # Count total missing cells for diagnostics
-      n_missing_cells <- sum(is.na(dat[, predictor_vars]))
+
       
 
       cat(sprintf("[%s] Regression-based imputation: %d rows (%.1f%%) | %d cells imputed\n",
-                  ifelse(is.null(label), "unlabeled", label),
+                  label,
                   length(incomplete_idx), 100 * length(incomplete_idx) / nrow(dat_prepared),
-                  n_missing_cells))
+                  n_missing_cells_pre))
       cat(sprintf("  Target PD: %.4f (logit: %.3f) | Complete cases for fit: %d\n",
             target_p, target_logit, n_complete))
       
@@ -1459,7 +1495,7 @@ prepare_for_modeling <- function(dat, scaling, method = "regression",
         if (n_missing > 0) {
           fill_value <- median(dat_prepared[[var]], na.rm = TRUE)
           dat_prepared[[var]][is.na(dat_prepared[[var]])] <- fill_value
-          cat(sprintf("Imputed %d NAs in %-20s method: %s, value: %.4f\n",
+          cat(sprintf("Median imputed %d NAs in %-20s method: %s, value: %.4f\n",
             n_missing, var, method, fill_value))
         }
       }
@@ -1496,11 +1532,26 @@ prepare_for_modeling <- function(dat, scaling, method = "regression",
     }
   }
   
+
+  # ---- Prep Part 3: Rescaling --------
+    # noise = scale mean only
+    # any missingness = mean and SD
+  
+  
+
   # Recompute all _z columns using clean scaling parameters
+  imp_meta <- attr(dat, "impairment")
+  noise_vars <- if (!is.null(imp_meta) && imp_meta$type == "noise") imp_meta$vars else character(0)
+  
   for (var in names(scaling)) {
     z_col <- paste0(var, "_z")
     if (z_col %in% names(dat_prepared)) {
-      dat_prepared[[z_col]] <- (dat_prepared[[var]] - scaling[[var]]["mean"]) / scaling[[var]]["sd"]
+      if (var %in% noise_vars) {
+        # Mean-only: preserve inflated variance from noise impairment
+        dat_prepared[[z_col]] <- dat_prepared[[var]] - scaling[[var]]["mean"]
+      } else {
+        dat_prepared[[z_col]] <- (dat_prepared[[var]] - scaling[[var]]["mean"]) / scaling[[var]]["sd"]
+      }
     }
   }
   
@@ -1518,18 +1569,6 @@ prepare_for_modeling <- function(dat, scaling, method = "regression",
 ```
 
 
-```{r}
-dat_mcar_mild_prepped <- prepare_for_modeling(dat_mcar_mild, result$scaling,
-                          method = "regression", model_formula = pd_formula)
-
-# Should both be zero now
-cat("Remaining NAs in log_assets:", sum(is.na(dat_mcar_mild_prepped$log_assets)), "\n")
-cat("Remaining NAs in log_assets_z:", sum(is.na(dat_mcar_mild_prepped$log_assets_z)), "\n")
-```
-
-
-
-
 Fixing the data: with the default method of regression (? what do you call it) imputation
 ```{r}
 
@@ -1537,45 +1576,46 @@ Fixing the data: with the default method of regression (? what do you call it) i
 
 # Missingness conditions: impute NAs using the default regression technique + recompute z-scores
 
+dat_mcar_mild_prepped   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_mcar_severe_prepped <- prepare_for_modeling(dat_mcar_severe, result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_mar_mild_prepped    <- prepare_for_modeling(dat_mar_mild,    result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_mar_severe_prepped  <- prepare_for_modeling(dat_mar_severe,  result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_mnar_mild_prepped   <- prepare_for_modeling(dat_mnar_mild,   result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_mnar_severe_prepped <- prepare_for_modeling(dat_mnar_severe, result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+
+# Noise and implausible: implaus values are turned to NAs, then imputation
+
+dat_noise_mild_prepped   <- prepare_for_modeling(dat_noise_mild,   result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_noise_severe_prepped <- prepare_for_modeling(dat_noise_severe, result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_impl_mild_prepped    <- prepare_for_modeling(dat_impl_mild,    result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe,  result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
 
 
-# now this can be prepared
-dat_mcar_mild_prepped   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, method = "regression", model_formula = pd_formula)
-dat_mcar_severe_prepped <- prepare_for_modeling(dat_mcar_severe, result$scaling, method = "regression", model_formula = pd_formula)
-dat_mar_mild_prepped    <- prepare_for_modeling(dat_mar_mild,    result$scaling, method = "regression", model_formula = pd_formula)
-dat_mar_severe_prepped  <- prepare_for_modeling(dat_mar_severe,  result$scaling, method = "regression", model_formula = pd_formula)
-dat_mnar_mild_prepped   <- prepare_for_modeling(dat_mnar_mild,   result$scaling, method = "regression", model_formula = pd_formula)
-dat_mnar_severe_prepped <- prepare_for_modeling(dat_mnar_severe, result$scaling, method = "regression", model_formula = pd_formula)
-
-# Noise and implausible: no NAs to impute, but z-scores get recomputed
-dat_noise_mild_prepped   <- prepare_for_modeling(dat_noise_mild,   result$scaling, method = "regression")
-dat_noise_severe_prepped <- prepare_for_modeling(dat_noise_severe, result$scaling, method = "regression")
-dat_impl_mild_prepped    <- prepare_for_modeling(dat_impl_mild,    result$scaling, method = "regression")
-dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe,  result$scaling, method = "regression")
 
 ```
 
+
+
 Sidequest 1: what happens if we use median or mice?
 ```{r}
-
 # Missingness conditions: impute NAs + recompute z-scores
-dat_mcar_mild_prepped_med   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, method = "median")
-dat_mcar_severe_prepped_med <- prepare_for_modeling(dat_mcar_severe, result$scaling, method = "median")
-dat_mar_mild_prepped_med    <- prepare_for_modeling(dat_mar_mild,    result$scaling, method = "median")
-dat_mar_severe_prepped_med  <- prepare_for_modeling(dat_mar_severe,  result$scaling, method = "median")
-dat_mnar_mild_prepped_med   <- prepare_for_modeling(dat_mnar_mild,   result$scaling, method = "median")
-dat_mnar_severe_prepped_med <- prepare_for_modeling(dat_mnar_severe, result$scaling, method = "median")
+dat_mcar_mild_prepped_med   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, result$winsor_bounds, method = "median")
+dat_mcar_severe_prepped_med <- prepare_for_modeling(dat_mcar_severe, result$scaling, result$winsor_bounds,  method = "median")
+dat_mar_mild_prepped_med    <- prepare_for_modeling(dat_mar_mild,    result$scaling, result$winsor_bounds,  method = "median")
+dat_mar_severe_prepped_med  <- prepare_for_modeling(dat_mar_severe,  result$scaling, result$winsor_bounds,  method = "median")
+dat_mnar_mild_prepped_med   <- prepare_for_modeling(dat_mnar_mild,   result$scaling, result$winsor_bounds,  method = "median")
+dat_mnar_severe_prepped_med <- prepare_for_modeling(dat_mnar_severe, result$scaling, result$winsor_bounds,  method = "median")
+```
 
 
-
-
+```{r}
 # Missingness conditions: impute NAs + recompute z-scores
-dat_mcar_mild_prepped_mice   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, method = "mice")
-dat_mcar_severe_prepped_mice <- prepare_for_modeling(dat_mcar_severe, result$scaling, method = "mice")
-dat_mar_mild_prepped_mice    <- prepare_for_modeling(dat_mar_mild,    result$scaling, method = "mice")
-dat_mar_severe_prepped_mice  <- prepare_for_modeling(dat_mar_severe,  result$scaling, method = "mice")
-dat_mnar_mild_prepped_mice   <- prepare_for_modeling(dat_mnar_mild,   result$scaling, method = "mice")
-dat_mnar_severe_prepped_mice <- prepare_for_modeling(dat_mnar_severe, result$scaling, method = "mice")
+dat_mcar_mild_prepped_mice   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, result$winsor_bounds,  method = "mice")
+dat_mcar_severe_prepped_mice <- prepare_for_modeling(dat_mcar_severe, result$scaling, result$winsor_bounds,  method = "mice")
+dat_mar_mild_prepped_mice    <- prepare_for_modeling(dat_mar_mild,    result$scaling, result$winsor_bounds,  method = "mice")
+dat_mar_severe_prepped_mice  <- prepare_for_modeling(dat_mar_severe,  result$scaling, result$winsor_bounds,  method = "mice")
+dat_mnar_mild_prepped_mice   <- prepare_for_modeling(dat_mnar_mild,   result$scaling, result$winsor_bounds,  method = "mice")
+dat_mnar_severe_prepped_mice <- prepare_for_modeling(dat_mnar_severe, result$scaling, result$winsor_bounds,  method = "mice")
 
 
 
@@ -1593,9 +1633,12 @@ regr_list <- list(
   mar_mild    = dat_mar_mild_prepped,
   mar_severe  = dat_mar_severe_prepped,
   mnar_mild   = dat_mnar_mild_prepped,
-  mnar_severe = dat_mnar_severe_prepped
+  mnar_severe = dat_mnar_severe_prepped,
+  noise_mild  = dat_noise_mild_prepped,
+  noise_severe = dat_noise_severe_prepped,
+  impl_mild   = dat_impl_mild_prepped,
+  impl_severe = dat_impl_severe_prepped
 )
-
 
 median_list <- list(
   mcar_mild   = dat_mcar_mild_prepped_med,
@@ -1615,7 +1658,7 @@ mice_list <- list(
   mnar_severe = dat_mnar_severe_prepped_mice
 )
 
-frs_compare <- compare_frs_imputation(dat, impaired_list, regr_list, median_list, mice_list)
+frs_compare <- compare_frs_imputation(dat, impaired_list, regr_list, median_list, mice_list, result$winsor_bounds, result$plausibility_bounds)
 frs_compare
 
 
@@ -1635,8 +1678,9 @@ frs_summary <- aggregate(
 
 ggplot(frs_summary, aes(x = stage, y = frs, fill = stage)) +
   geom_col() +
-  geom_text(aes(label = round(frs, 3)), vjust = -0.3, size = 3) +
+  geom_text(aes(label = round(frs, 3)), vjust = -0.5, size = 2.5) +
   facet_grid(severity ~ type) +
+  coord_cartesian(ylim = c(0.90, 1.005)) +
   scale_fill_manual(values = c(clean      = "grey70",
                                impaired   = "#e74c3c",
                                regression = "#3498db",
