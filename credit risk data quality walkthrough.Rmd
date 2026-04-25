@@ -50,7 +50,7 @@ Plus -- adding randomness
 c) **log_assets**: proxy for firm size, dependent on age and sector
 d) **debt to equity**: higher leverage is more dangerous --> dependent on how big the firm is and how old it is
 e) **interest_cov**: proxy for cash flow 
-f) NEW -- ADDED -- **Crefo score**. Dependent on most things above. Sometimes gets lagged (not updated every year)
+f) **Crefo score**. (see below) Dependent on most things above. Sometimes gets lagged (not updated every year)
 
 ---
 
@@ -98,6 +98,15 @@ True betas = ground truth coefficients
 
 ---
 
+**A quick note on Crefo score (Crefo Bonitätsindex)**
+
+Scale: 100 (excellent) to 600 (insolvent) — higher = worse creditworthiness.
+Generated as a noisy composite of the same financial signals the bureau uses: leverage, coverage, firm size, and sector. Idiosyncratic noise (sd = 25)
+reflects bureau information not in our DGP (payment history with other creditors, legal registry data, etc.).
+
+Sector penalties: manufacturing (tbd) (30) and construction (55) reflect higher historical default rates in those sectors per Creditreform.
+
+
 ```{r}
 
 # Creating panel data
@@ -118,18 +127,25 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
   # PHASE 1: FIRM ORIGINATION
   # ============================================================
   
+  # Var 1: Firm Age
   firm_age_orig <- rgamma(N, shape = 3, rate = 0.15)
   
-  # CHANGED: three sectors instead of binary
+  
+  # Var 2: Sector
+  # Three sectors instead of binary
   # 1 = services (reference), 2 = manufacturing, 3 = construction
   # Proportions reflect a realistic B2B lending portfolio
   sector   <- sample(1:3, N, replace = TRUE, prob = c(0.5, 0.3, 0.2))
   sector_2 <- as.integer(sector == 2)   # manufacturing dummy
   sector_3 <- as.integer(sector == 3)   # construction dummy
   
-  # CHANGED: log_assets now uses sector dummies instead of binary sector
+  # Var 3: Total Assets (firm size. log transformed, as per Ohlson (1980))
   log_assets_orig     <- 8 + 0.03 * firm_age_orig + 0.3 * sector_2 + 0.1 * sector_3 + rnorm(N, 0, 1)
+  
+  # Var 4: Debt-to-Equity Ratio (leverage)
   debt_to_equity_orig <- pmax(3 - 0.1 * scale(log_assets_orig) - 0.02 * scale(firm_age_orig) +   rgamma(N, shape = 1, rate = 1), 0)
+  
+  # Var 5: Interest Coverage Ratio (cash flow)
   interest_cov_orig   <- pmax(5 - 0.4 * scale(debt_to_equity_orig) + 0.3 * scale(log_assets_orig) + rnorm(N, 0, 1), 0)
   
   log_assets_mean     <- mean(log_assets_orig);     log_assets_sd     <- sd(log_assets_orig)
@@ -137,16 +153,8 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
   interest_cov_mean   <- mean(interest_cov_orig);   interest_cov_sd   <- sd(interest_cov_orig)
   firm_age_mean       <- mean(firm_age_orig);       firm_age_sd       <- sd(firm_age_orig)
   
-  # NEW: Crefo Bonitätsindex at origination
-  # Scale: 100 (excellent) to 600 (insolvent) — higher = worse creditworthiness.
-  # Generated as a noisy composite of the same financial signals the bureau uses:
-  # leverage, coverage, firm size, and sector. Idiosyncratic noise (sd = 25)
-  # reflects bureau information not in our DGP (payment history with other
-  # creditors, legal registry data, etc.).
-  # Sector penalties: manufacturing (30) and construction (55) reflect
-  # higher historical default rates in those sectors per Creditreform.
-  # Weights are placeholders — to be confirmed with Risk Research.
-  
+
+  # Var 6: CreditReform Bonitätsindex (Crefo score)
   crefo_orig <- round(
     300
     + 60  * as.numeric(scale(debt_to_equity_orig))   # higher leverage → worse score
@@ -156,11 +164,12 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
     + 55  * sector_3                                 # construction penalty
     + rnorm(N, 0, 25)                                # idiosyncratic bureau noise
   )
+  
   crefo_orig <- pmin(pmax(crefo_orig, 100), 600)     # clamp to valid Crefo range
   
-  crefo_mean <- mean(crefo_orig)
-  crefo_sd   <- sd(crefo_orig)
+  crefo_mean <- mean(crefo_orig);   crefo_sd   <- sd(crefo_orig)
   
+  # Additional variables -- keeping record of firms and their loans over time
   firm_id      <- sprintf("FIRM_%05d", seq_len(N))
   vintage_year <- sample(2005:2025, N, replace = TRUE)
   loan_term    <- sample(min_term:max_term, N, replace = TRUE)
@@ -181,10 +190,7 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
   # beta0 = 4.0 
   # probability, giving firms runway to deteriorate before defaulting
   # rather than exiting immediately at origination.
-  # CHANGED: beta_sector replaced with beta_sector2 / beta_sector3
-  # (sector 1 = services is the reference category).
-  # NEW: beta_crefo added — higher score (worse creditworthiness) = higher PD.
-  # All betas are on the standardised scale (change in log-odds per 1 SD).
+  # All betas are on the standardized scale (change in log-odds per 1 SD).
   # ============================================================
   
   beta0               <- -4     # the default rate we want to recover. currently 2%
@@ -202,13 +208,14 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
   
   rows <- vector("list", N)
   
+  # Creating the origination values for firm [i]
   for (i in seq_len(N)) {
     
     la    <- log_assets_orig[i]
     dte   <- debt_to_equity_orig[i]
     ic    <- interest_cov_orig[i]
     fa    <- firm_age_orig[i]
-    crefo <- crefo_orig[i]           # NEW: initialize Crefo at origination value
+    crefo <- crefo_orig[i]           
     
     firm_rows <- vector("list", loan_term[i])
     
@@ -223,7 +230,7 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
         ic_z_curr  <- (ic  - interest_cov_mean)   / interest_cov_sd
         fa_z_curr  <- (fa  - firm_age_mean)        / firm_age_sd
         
-        # CHANGED: pd_curr now uses sector dummies
+        # pd_curr probability creation: how intensely are you deteriorating (if at all)?
         pd_curr <- plogis(beta0 +
                             beta_log_assets     * la_z_curr  +
                             beta_debt_to_equity * dte_z_curr +
@@ -233,8 +240,10 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
                             beta_firm_age       * fa_z_curr)
         # Note: Crefo intentionally excluded from pd_curr used for drift weighting.
         # The drift mechanism operates on the underlying financial state; Crefo
-        # is a derived signal and including it here would create circular feedback.
+        # is a derived / external signal and including it here would create circular feedback.
         
+        # Below: the drift mechanism depending on state (deteriorating, stable, improving).
+        # For deteriorating: the worse your current PD is, the stronger it pulls you down.
         if (trajectory[i] == "deteriorating") {
           drift_mean_dte <- +drift_scale * pd_curr
           drift_mean_ic  <- -drift_scale * pd_curr
@@ -249,12 +258,13 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
           drift_mean_la  <-  drift_scale * 0.25
         }
         
+        # Here are the yearly updates for the financials: drifting plus random noise
         dte <- pmax(dte + rnorm(1, mean = drift_mean_dte, sd = drift_sd_debt_to_equity), 0)
         ic  <- pmax(ic  + rnorm(1, mean = drift_mean_ic,  sd = drift_sd_interest_cov),   0)
         la  <-      la  + rnorm(1, mean = drift_mean_la,  sd = drift_sd_log_assets)
         fa  <- fa + 1
         
-        # NEW: Crefo staleness mechanism
+        # Added: Crefo staleness mechanism
         # Each year the score is refreshed with probability crefo_refresh_prob.
         # A refreshed score reflects the firm's *current* financial state (post-drift).
         # Otherwise the prior year's value carries forward unchanged.
@@ -302,6 +312,7 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
         default <- rbinom(1, size = 1, prob = pd_true)
       }
       
+      # Some firms will pay back their loans when due.
       repaid <- as.integer(!default & t == loan_term[i])
       
       # --- 3e. Store this firm-year row ---
@@ -320,26 +331,29 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
         debt_to_equity   = dte,
         interest_cov     = ic,
         firm_age         = fa,
-        crefo            = crefo,          # NEW: raw Crefo score (100–600)
+        crefo            = crefo,          
         log_assets_z     = la_z,
         debt_to_equity_z = dte_z,
         interest_cov_z   = ic_z,
         firm_age_z       = fa_z,
-        crefo_z          = crefo_z,        # NEW: standardized Crefo
+        crefo_z          = crefo_z,        
         pd_true          = pd_true,
         default          = default,
         repaid           = repaid
       )
       
+      # Stop following the firm after default.
       if (default == 1L) {
         firm_rows <- firm_rows[seq_len(t)]
         break
       }
     }
     
+    # Finish the firm, then store it in its "sub-list".
     rows[[i]] <- do.call(rbind, firm_rows)
   }
   
+  # Then combine all firms to create the final panel
   panel <- do.call(rbind, rows)
   
   # ============================================================
@@ -442,6 +456,8 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
 
 ```
 
+
+
 ## Simulation
 
 This creates one synthetic dataset with 5000 businesses / around 20k rows, and tests the default rate -- should be around 1-5%.
@@ -466,21 +482,6 @@ pd_formula <- default ~ log_assets_z + debt_to_equity_z + interest_cov_z +
 ```
 
 
-```{r}
-
-# Do deteriorating firms actually have rising dte and falling ic over time?
-det_firms <- dat[dat$trajectory == "deteriorating", ]
-cat("Deteriorating firms — mean dte year 1:", 
-    round(mean(det_firms$debt_to_equity[det_firms$years_on_book == 1]), 3), "\n")
-cat("Deteriorating firms — mean dte year 3+:", 
-    round(mean(det_firms$debt_to_equity[det_firms$years_on_book >= 3]), 3), "\n")
-cat("Deteriorating firms — mean ic year 1:", 
-    round(mean(det_firms$interest_cov[det_firms$years_on_book == 1]), 3), "\n")
-cat("Deteriorating firms — mean ic year 3+:", 
-    round(mean(det_firms$interest_cov[det_firms$years_on_book >= 3]), 3), "\n")
-
-
-```
 
 ## Model fit - perfect world
 
@@ -537,17 +538,6 @@ Variables included: financial ratios and firm_age. Sector and Crefo are excluded
 Mild: ~8% missing per cell, Severe: ~28% missing per cell
 
 ---
-
-Explanation of what happens in this function:
-
-- first: define function and its inputs (clean data, severity with default as "mild" if we don't specify
-- switch: mapping mild to 0.08 and severe to .28
-- make a copy of the clean dataset to work on
-- identify the financial variables that will get missingness  / apply same impairment logic to each one
-- actual mcar mechanism: flip a weighted coin for each of the n firms — it returns 1 (missing) with probability miss_prob and 0 (observed) with probability 1 - miss_prob. The == 1 converts that into a logical vector of TRUE/FALSE, where TRUE means that firm's value will be set to missing. Every firm has exactly the same probability of being missing regardless of anything else about them — that's what makes it MCAR.
-- where "missing idx" is true (1), replace with NAs
-- metadata: attaching tags to an object without making columns in a dataframe
-- return the impaired dataset
 
 
 ```{r}
@@ -607,15 +597,6 @@ Mechanism: younger firms are less likely to have a Creditreform score because th
 
 This is MAR because the missingness predictor (firm_age) is often observed and is a different variable from the one with missing data (crefo) — consistent with Little & Rubin (2002) and Zhang (2023, p. 116). The logistic regression method is used for realistic gradual probability change (Zhang, 2023, p. 116). Domain justification: confirmed with company supervisors — new market entrants frequently lack Creditreform coverage in German B2B lending.
 
-
-Explanation of what happens in this function:
-- (-3.5) / (-1.5) are the log-odds of missingness (intercept) when firm_age =  0
-      (tuned until the average missing rate across simulated firms is ~8% or 28%)
-- Plogis(): each firm gets its own missing probability based on its age
-- Check for the average of all indiv. probabilities (8% / 28%)
-- Applying missingness: rbinom flips a weighted coin for each firm using their probability made above
-    Result: when something gets set to 1, then it becomes an "NA"
-- Rescale with clean parameters (mean and SD), tag with metadata
 
 
 ```{r}
@@ -692,7 +673,7 @@ Note: because persistence amplifies the initial trigger rate, the per-year trigg
 impair_mnar <- function(dat, severity = "mild") {
   
   mnar_intercept <- switch(severity,
-    mild   = -4.5,
+    mild   = -3.9,
     severe = -2.5
   )
   
@@ -771,15 +752,12 @@ dat_mnar_severe <- impair_mnar(dat, severity = "severe")
 
 #### **Impairment 4: Measurement Noise**
 
-What is happening here:
+Measurement noise: Gaussian noise added to continuous financial predictors, creating a less-precise dataset.
 
-- Switch: maps severity string (above) to a number
-- Mild at the moment: will have an extra SD 10% of the clean variable's SD -- severe is 50%. subject to change!!
-- Save a new copy and save the sample size in n
-- Designating only a few "noise variables" (firm age not getting noise - confirm)
-- Cycling through all the variables: pull the clean SD from "scaling", generate N draws from a normal distribution centered around zero. Adding to each variable * multiplier for mild / severe
-- Print impairment per variable 
-- metadata tag on the new dataframe
+Only continuous predictors are corrupted (except firm_age)
+
+Severity defined as % of each variable's clean SD
+Mild: SD_noise = 10% of clean SD, Severe: SD_noise = 50% of clean SD
 
 
 ```{r}
@@ -787,9 +765,7 @@ What is happening here:
 
 impair_noise <- function(dat, scaling, severity = "mild") {
   
-  # Measurement noise: Gaussian noise added to continuous financial predictors
-  # Severity defined as % of each variable's clean SD
-  # mild: SD_noise = 10% of clean SD, severe: SD_noise = 50% of clean SD
+
   noise_sd_multiplier <- switch(severity,
     mild   = 0.10,
     severe = 0.50
@@ -805,17 +781,20 @@ impair_noise <- function(dat, scaling, severity = "mild") {
   
   for (v in noise_vars) {
     clean_sd   <- scaling[[v]]["sd"]
+    clean_mean <- scaling[[v]]["mean"]
     noise      <- rnorm(n, mean = 0, sd = noise_sd_multiplier * clean_sd)
     dat_impaired[[v]] <- dat_impaired[[v]] + noise
+    dat_impaired[[paste0(v, "_z")]] <- (dat_impaired[[v]] - clean_mean) / clean_sd
   }
   
   # Print SD inflation per variable so you can verify severity
   for (v in noise_vars) {
-    cat(sprintf("Noise SD for %s: %.4f (%.0f%% of clean SD = %.4f)\n",
+    cat(sprintf("Noise SD for %s: %.4f (%.0f%% of clean SD = %.4f) | realized SD of corrupted var: %.4f\n",
       v,
       noise_sd_multiplier * scaling[[v]]["sd"],
       noise_sd_multiplier * 100,
-      scaling[[v]]["sd"]
+      scaling[[v]]["sd"],
+      sd(dat_impaired[[v]], na.rm = TRUE)
     ))
   }
   
@@ -854,16 +833,15 @@ Unlike the missingness impairments, implausible values are designed to be hetero
 Three error types per variable:
   1. Domain-invalid: clearly impossible values (negative age, etc.)
   2. Extreme outlier: technically possible but far outside normal range
-  3. Subtle: within plausible range but wrong (decimal shifts, swaps)
+  3. Subtle: within plausible range but wrong (decimal shifts, swaps [numerator / denominator, or age in months not years)
   
   
 Severity controls the total % of rows corrupted per variable.
-PLACEHOLDER rates — to be confirmed with company supervisors.
 
 
 ```{r}
 
-impair_implausible <- function(dat, severity = "mild") {
+impair_implausible <- function(dat, scaling, severity = "mild") {
   
   corrupt_rate <- switch(severity,
     mild   = 0.05,
@@ -888,6 +866,7 @@ impair_implausible <- function(dat, severity = "mild") {
   new_vals[error_type == 3] <- new_vals[error_type == 3] * 10  # decimal shift
   
   dat_impaired$log_assets[idx] <- new_vals
+  dat_impaired$log_assets_z <- (dat_impaired$log_assets - scaling$log_assets["mean"]) / scaling$log_assets["sd"]
   cat(sprintf("Implausible in log_assets: %d rows (%.0f%%) — %d invalid, %d extreme, %d subtle\n",
     n_corrupt, corrupt_rate * 100,
     sum(error_type == 1), sum(error_type == 2), sum(error_type == 3)))
@@ -906,6 +885,7 @@ impair_implausible <- function(dat, severity = "mild") {
   new_vals[error_type == 3] <- 1 / pmax(new_vals[error_type == 3], 0.01)  # inverted ratio
   
   dat_impaired$debt_to_equity[idx] <- new_vals
+ dat_impaired$debt_to_equity_z <- (dat_impaired$debt_to_equity - scaling$debt_to_equity["mean"]) / scaling$debt_to_equity["sd"]
   cat(sprintf("Implausible in debt_to_equity: %d rows (%.0f%%) — %d invalid, %d extreme, %d subtle\n",
     n_corrupt, corrupt_rate * 100,
     sum(error_type == 1), sum(error_type == 2), sum(error_type == 3)))
@@ -922,6 +902,7 @@ impair_implausible <- function(dat, severity = "mild") {
   new_vals[error_type == 3] <- 0                                 # placeholder zero
   
   dat_impaired$interest_cov[idx] <- new_vals
+  dat_impaired$interest_cov_z <- (dat_impaired$interest_cov - scaling$interest_cov["mean"]) / scaling$interest_cov["sd"]
   cat(sprintf("Implausible in interest_cov: %d rows (%.0f%%) — %d invalid, %d extreme, %d subtle\n",
     n_corrupt, corrupt_rate * 100,
     sum(error_type == 1), sum(error_type == 2), sum(error_type == 3)))
@@ -962,14 +943,38 @@ impair_implausible <- function(dat, severity = "mild") {
 Creating the impaired datasets:
 ```{r}
 cat("Mild implausible impairment:\n")
-dat_impl_mild   <- impair_implausible(dat, severity = "mild")
+dat_impl_mild   <- impair_implausible(dat, result$scaling, severity = "mild")
 
 cat("\nSevere implausible impairment:\n")
-dat_impl_severe <- impair_implausible(dat, severity = "severe")
+dat_impl_severe <- impair_implausible(dat, result$scaling, severity = "severe")
 
 ```
 
+---
+
 ### Function Checks Before Impairment / Modeling
+
+
+```{r}
+
+# ── DGP Checks ────────────────────────────────
+
+
+# Do deteriorating firms actually have rising dte and falling ic over time?
+det_firms <- dat[dat$trajectory == "deteriorating", ]
+cat("Deteriorating firms — mean dte year 1:", 
+    round(mean(det_firms$debt_to_equity[det_firms$years_on_book == 1]), 3), "\n")
+cat("Deteriorating firms — mean dte year 3+:", 
+    round(mean(det_firms$debt_to_equity[det_firms$years_on_book >= 3]), 3), "\n")
+cat("Deteriorating firms — mean ic year 1:", 
+    round(mean(det_firms$interest_cov[det_firms$years_on_book == 1]), 3), "\n")
+cat("Deteriorating firms — mean ic year 3+:", 
+    round(mean(det_firms$interest_cov[det_firms$years_on_book >= 3]), 3), "\n")
+
+
+```
+
+
 
 ```{r}
 # ── All Impairment Functions ────────────────────────────────
