@@ -1,16 +1,18 @@
 ---
 title: "Credit Risk Data Quality Simulation"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 date: "2026-03-02"
 ---
 
-```{r setup, include=FALSE}
+```{r setup, include=FALSE, warning=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-# Part 0: Helper functions and setup 
+### Part 0: Helper functions and setup 
 
-```{r}
+```{r, warning=FALSE, message=FALSE}
 source("02_helperfunctions.R")
 
 required_packages <- c("ggplot2", "dplyr", "tidyr", "mice")
@@ -21,48 +23,38 @@ for (pkg in required_packages) {
   }
   library(pkg, character.only = TRUE)
 }
+
 ```
 
 
-# Part 1: Creating the "Perfect World" with the DGP
+# **Part 1: Creating the "Perfect World" with the DGP**
 
-## Overview
+### Overview
 
-step 1: creating a function that takes inputs re: how many firms to simulate, terms of the loan, the drift of the SD (random walk time series). The default values are fine. But this can be customized for future use 
+---
 
-----------------------------------------------------------
+##### **Phase 1. Generating features (predictors) for the business world**
+Have to define both the variables and their distributions / dependencies.
 
-Step 2: generating features (predictors) for the business world
 
-1: root variables
+1: **Root variables**
 
-a) firm age: right skewed so using gamma distribution
-b) sector: can be 1 of 3 sectors with different probabilities
+a) **firm age**: right skewed so using gamma distribution
+b) **sector**: can be 1 of 3 sectors with different probabilities
 
-2: Chained regression dependencies: each one is determined by the one in front of it -- older firms tend to be larger, larger firms tend to have lower leverage
+2: **Chained regression dependencies**
 
+Each variable is determined by the one in front of it -- older firms tend to be larger, larger firms tend to have lower leverage
 Plus -- adding randomness
 
-These are just tests at the moment
+c) **log_assets**: proxy for firm size, dependent on age and sector
+d) **debt to equity**: higher leverage is more dangerous --> dependent on how big the firm is and how old it is
+e) **interest_cov**: proxy for cash flow 
+f) NEW -- ADDED -- **Crefo score**. Dependent on most things above. Sometimes gets lagged (not updated every year)
 
-c) log_assets: proxy for firm size, dependent on age and sector
-d) debt to equity: higher leverage is more dangerous --> dependent on how big the firm is and how old it is
-e) interest_cov: proxy for cash flow 
-f) NEW -- ADDED -- Crefo score. Dependent on most things above. Sometimes gets lagged (not updated every year)
+---
 
-----------------------------------------------------------
-
-Step 3: we have to standardize features for the true model (DGP)
-
-- compute and save mean and SD of each variable
-- use those parameters to standardize later on
-
-We do it manually rather than just calling scale() because later, when you introduce impairments, you need to apply these exact same parameters to the impaired data — if you let the impaired data rescale itself, the impairment shifts the mean/SD and you'd be confounding two effects at once.
-
-----------------------------------------------------------
-
-Step 4: 
-Choose the true coefficients that define the world
+##### **2. Choose the true coefficients that define the world**
 
 This is the "ground truth" -- can be confirmed from RR
 All are standardized (change in log-odds per 1 SD increase)
@@ -75,42 +67,36 @@ All are standardized (change in log-odds per 1 SD increase)
   beta_firm_age       <- -0.1   older firms slightly safer
   beta_crefo          <-  0.3   higher Crefo score → higher default risk
   
-----------------------------------------------------------
+---
 
-Step 5: 
-conversion to panel data!
+##### **3. Create panel data with time series component**
 
-inner loop - creating firms that either stay the same over time, get worse, or improve... (drift rates)
-default or not.
-Crefo will sometimes refresh itself
-over 3-7 year loan periods
+Inner loop - creating firms that either stay the same over time, get worse, or improve... (drift rates); default or not during their 3-7 year loan periods.
+Crefo will sometimes refresh itself, sometimes remaining stale
 
-Outer loop creates lots of these firms
+Outer loop creates lots of these firms. Then the rows are bound together
 
-Then rows are bound together
 
-----------------------------------------------------------
-
-Step 6: convert linear predictors to PDs
 - the "linpred" part -- weighted sum of the predictors. this is logistic regression
     - computes the log-odds of default for each borrower
 - pd_true: then after: the logistic transformation so we get the true PDs and not log-odds
 
-----------------------------------------------------------
 
-Step 7: draw observed defaults. (default) 
+Draw observed defaults.
 For each borrower, draw a default with pd_true value from before
 - borrowers can have same PDs but 2 different outcomes (default or not)
 
+---
 
-and return a list for later
-Data has both raw and scaled versions of every variable
-Scaling = the mean and SD of every predictor so you can apply consistently to the impaired datasets
+##### **4. Reporting and returning a list **
+
+- Data has both raw and scaled versions of every variable
+- Scaling = the mean and SD of every predictor so you can apply consistently to the impaired datasets
+- Also saving the bounds for winsorization and plausibility (related to data preparation and FRS scores)
+
 True betas = ground truth coefficients
 
-----------------------------------------------------------
-
-Then...the end
+---
 
 ```{r}
 
@@ -458,8 +444,7 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
 
 ## Simulation
 
-This creates one synthetic dataset with 5000 businesses / around 20k rows
-And tests the default rate -- should be around 1-5%
+This creates one synthetic dataset with 5000 businesses / around 20k rows, and tests the default rate -- should be around 1-5%.
 
 
 ```{r}
@@ -482,14 +467,6 @@ pd_formula <- default ~ log_assets_z + debt_to_equity_z + interest_cov_z +
 
 
 ```{r}
-# crefo check
-cat("Mean crefo (raw):     ", round(mean(dat$crefo), 1), "\n")
-cat("SD crefo (raw):       ", round(sd(dat$crefo), 1), "\n")
-cat("Mean crefo_z:         ", round(mean(dat$crefo_z), 4), "\n")
-cat("Crefo distribution:\n")
-print(quantile(dat$crefo, probs = c(0.1, 0.25, 0.5, 0.75, 0.9)))
-
-
 
 # Do deteriorating firms actually have rising dte and falling ic over time?
 det_firms <- dat[dat$trajectory == "deteriorating", ]
@@ -505,19 +482,12 @@ cat("Deteriorating firms — mean ic year 3+:",
 
 ```
 
-## Model fit
+## Model fit - perfect world
 
-Fitting a logistic regression -- this is the baseline model
-
-The second one will fit exactly because the coefficients are also scaled
-
+Fitting a logistic regression: this is the baseline model and should recover the betas very well. If anything, a little worse than purely cross-sectional data -- observations aren't independent and we add heterogeneity with the firm trajectories
 
 ```{r}
 ## Model fit
-# Fitting a logistic regression -- this is the baseline model
-
-# Pre-scaled inputs -- coefficients should recover true betas, but slightly looser because the trajectory mechanism introduces heterogeneity
-#   also because we have repeated observations per firm so no more independence
 
 fitcheck_scaled <- glm(default ~ log_assets_z + debt_to_equity_z + interest_cov_z + 
                          sector_2 + sector_3 + firm_age_z + crefo_z,
@@ -551,20 +521,30 @@ print_frs(frs_clean)
 
 ```
 
-
+---
 
 # Part 2: Data Impairment
-## MISSINGNESS
+### MISSINGNESS
 
-**Impairment 1: MCAR**
+#### **Impairment 1: MCAR**
+
+MCAR: missingness applied independently to each cell at random.
+
+Every cell has the same probability of being missing regardless of any other value in the dataset — no row-level or variable-level dependence. This is implemented via independent rbinom draws per variable, producing a random scatter of missingness across the data
+
+Variables included: financial ratios and firm_age. Sector and Crefo are excluded: sector is a simple categorical entry unlikely to be missing; Crefo missingness is modelled separately under the MAR condition.
+
+Mild: ~8% missing per cell, Severe: ~28% missing per cell
+
+---
 
 Explanation of what happens in this function:
 
-- first: define function and its three inputs (clean data, scaling parameters, severity with default as "mild" if we don't specify
+- first: define function and its inputs (clean data, severity with default as "mild" if we don't specify
 - switch: mapping mild to 0.08 and severe to .28
 - make a copy of the clean dataset to work on
-- identify the inancial variables that will get missingness  / apply same impairment logic to each one
-- actual mcar mechanism. flip a weighted coin for each of the n firms — it returns 1 (missing) with probability miss_prob and 0 (observed) with probability 1 - miss_prob. The == 1 converts that into a logical vector of TRUE/FALSE, where TRUE means that firm's value will be set to missing. Every firm has exactly the same probability of being missing regardless of anything else about them — that's what makes it MCAR.
+- identify the financial variables that will get missingness  / apply same impairment logic to each one
+- actual mcar mechanism: flip a weighted coin for each of the n firms — it returns 1 (missing) with probability miss_prob and 0 (observed) with probability 1 - miss_prob. The == 1 converts that into a logical vector of TRUE/FALSE, where TRUE means that firm's value will be set to missing. Every firm has exactly the same probability of being missing regardless of anything else about them — that's what makes it MCAR.
 - where "missing idx" is true (1), replace with NAs
 - metadata: attaching tags to an object without making columns in a dataframe
 - return the impaired dataset
@@ -573,19 +553,6 @@ Explanation of what happens in this function:
 ```{r}
 impair_mcar <- function(dat, severity = "mild") {
   
-  # MCAR: missingness applied independently to each cell at random.
-  # Every cell has the same probability of being missing regardless of
-  # any other value in the dataset — no row-level or variable-level
-  # dependence. This is implemented via independent rbinom draws per
-  # variable, producing a random scatter of missingness across the matrix.
-  # Variables included: financial ratios and firm_age.
-  # Firm_age is included on advisor recommendation — manual data entry
-  # errors, M&A-related firm identity confusion, and system migrations
-  # are all plausible sources of missing age information in B2B lending.
-  # Sector and Crefo are excluded: sector is a simple categorical entry
-  # unlikely to be missing; Crefo missingness is modelled separately
-  # under the MAR condition.
-  # Mild: ~8% missing per cell, Severe: ~28% missing per cell
   
   miss_prob <- switch(severity,
     mild   = 0.08,
@@ -619,8 +586,7 @@ impair_mcar <- function(dat, severity = "mild") {
 
 ```
 
-Running the MCAR function to create "mild" and "severe" impaired data
-
+Running the MCAR function to create "mild" and "severe" impaired data:
 ```{r}
 
 cat("Mild MCAR impairment:\n")
@@ -632,29 +598,98 @@ dat_mcar_severe <- impair_mcar(dat, severity = "severe")
 ```
 
 
-**Impairment 2: MNAR**
+#### **Impairment 2: MAR**
 
-Due to firms with bad financials (in this case, interest_cov) not reporting their financials
+
+MAR: missingness in crefo depends on firm_age (fully observed)
+
+Mechanism: younger firms are less likely to have a Creditreform score because they lack sufficient credit history for the bureau to have issued a rating. 
+
+This is MAR because the missingness predictor (firm_age) is often observed and is a different variable from the one with missing data (crefo) — consistent with Little & Rubin (2002) and Zhang (2023, p. 116). The logistic regression method is used for realistic gradual probability change (Zhang, 2023, p. 116). Domain justification: confirmed with company supervisors — new market entrants frequently lack Creditreform coverage in German B2B lending.
+
+
+Explanation of what happens in this function:
+- (-3.5) / (-1.5) are the log-odds of missingness (intercept) when firm_age =  0
+      (tuned until the average missing rate across simulated firms is ~8% or 28%)
+- Plogis(): each firm gets its own missing probability based on its age
+- Check for the average of all indiv. probabilities (8% / 28%)
+- Applying missingness: rbinom flips a weighted coin for each firm using their probability made above
+    Result: when something gets set to 1, then it becomes an "NA"
+- Rescale with clean parameters (mean and SD), tag with metadata
+
+
+```{r}
+
+impair_mar <- function(dat, severity = "mild") {
+  
+  # Intercepts tuned to match MCAR severity levels for fair comparison:
+  # Mild: ~8% average missing, Severe: ~28% average missing
+  # Negative coefficient on firm_age: younger firms → higher missingness prob
+  mar_intercept <- switch(severity,
+    mild   = -1.5,
+    severe = 0.1
+  )
+  
+  dat_impaired <- dat
+  n <- nrow(dat)
+  
+  # Missingness probability decreases with firm age
+  # firm_age is used on the raw scale here — older firms are progressively
+  # less likely to be missing a Crefo score
+  prob_missing <- plogis(mar_intercept - 0.05 * dat$firm_age)
+  
+  # Sanity check
+  cat("Average MAR missing rate:", round(mean(prob_missing), 3), "\n")
+  
+  # Apply missingness
+  missing_idx <- rbinom(n, 1, prob = prob_missing) == 1
+  dat_impaired$crefo[missing_idx] <- NA
+  dat_impaired$crefo_z[missing_idx] <- NA
+  
+  # Tag with metadata
+  attr(dat_impaired, "impairment") <- list(
+    type          = "MAR",
+    severity      = severity,
+    mar_intercept = mar_intercept,
+    mar_coef      = -0.05,
+    avg_miss_rate = mean(prob_missing),
+    driven_by     = "firm_age",
+    vars          = "crefo"
+  )
+  
+  dat_impaired
+}
+```
+
+Creating the impaired datasets:
+```{r}
+
+cat("Mild MAR impairment:\n")
+dat_mar_mild   <- impair_mar(dat, severity = "mild")
+
+cat("\nSevere MAR impairment:\n")
+dat_mar_severe <- impair_mar(dat, severity = "severe")
+
+```
+
+#### **Impairment 3: MNAR**
+
+MNAR: missingness in interest_cov depends on interest_cov itself.
+
+Mechanism: firms with poor interest coverage strategically omit reporting. This is MNAR because missingness depends on the unobserved value of the variable itself (Little & Rubin, 2002; Zhang, 2023, p. 117).
+
+Persistence: once a firm's interest_cov goes missing in a given year, it remains missing for all subsequent years of that firm's life. This reflects real reporting behavior — a firm that stops disclosing bad financials does not voluntarily resume disclosure.
+
+Intercepts tuned to achieve overall missing rates comparable to
+MCAR/MAR after persistence propagation:
+Mild: ~8% of firm-years, Severe: ~28% of firm-years
+
+Note: because persistence amplifies the initial trigger rate, the per-year trigger probability is set lower than the target.
+
 
 ```{r}
 
 impair_mnar <- function(dat, severity = "mild") {
-  
-  # MNAR: missingness in interest_cov depends on interest_cov itself
-  # Mechanism: firms with poor interest coverage strategically omit reporting.
-  # This is MNAR because missingness depends on the unobserved value of the
-  # variable itself (Little & Rubin, 2002; Zhang, 2023, p. 117).
-  #
-  # Persistence: once a firm's interest_cov goes missing in a given year,
-  # it remains missing for all subsequent years of that firm's life. This
-  # reflects real reporting behavior — a firm that stops disclosing bad
-  # financials does not voluntarily resume disclosure.
-  #
-  # Intercepts tuned to achieve overall missing rates comparable to
-  # MCAR/MAR after persistence propagation:
-  # Mild: ~8% of firm-years, Severe: ~28% of firm-years
-  # Note: because persistence amplifies the initial trigger rate,
-  # the per-year trigger probability is set lower than the target.
   
   mnar_intercept <- switch(severity,
     mild   = -4.5,
@@ -673,7 +708,7 @@ impair_mnar <- function(dat, severity = "mild") {
   # Step 2: Draw initial missingness triggers (per firm-year)
   trigger <- rbinom(n, 1, prob = prob_missing) == 1
   
-  # Step 3: Propagate forward within each firm
+  # Step 3: Carry forward within each firm
   # Once triggered, all subsequent years for that firm are also missing
   firms <- unique(dat_impaired$firm_id)
   
@@ -721,6 +756,7 @@ impair_mnar <- function(dat, severity = "mild") {
 
 ```
 
+Creating the impaired datasets:
 ```{r}
 cat("Mild MNAR impairment:\n")
 dat_mnar_mild   <- impair_mnar(dat, severity = "mild")
@@ -728,96 +764,15 @@ dat_mnar_mild   <- impair_mnar(dat, severity = "mild")
 cat("\nSevere MNAR impairment:\n")
 dat_mnar_severe <- impair_mnar(dat, severity = "severe")
 
-
-```
-
-**Impairment 3: MAR**
-
-Due to younger firms not having a Crefo score
-MAR because whether a value is missing depends on an observed variable (here = firm_age)
-
-Explanation of what happens in this function:
-- first: taking in data, scaling from clean variables, severity
-- (-3.5) / (-1.5) are the log-odds of missingness (intercept) when firm_age =  0
-      (tuned until the average missing rate across simulated firms is ~8% or 28%)
-- Plogis(): each firm gets its own missing probability based on its age
-- Check for the average of all indiv. probabilities (8% / 28%)
-- Applying missingness: rbinom flips a weighted coin for each firm using their probability made above
-    Result: when something gets set to 1, then it becomes an "NA"
-- Rescale with clean parameters (mean and SD), tag with metadata
-
-
-```{r}
-
-impair_mar <- function(dat, severity = "mild") {
-  
-  # MAR: missingness in crefo depends on firm_age (fully observed)
-  # Mechanism: younger firms are less likely to have a Creditreform score
-  # because they lack sufficient credit history for the bureau to have issued
-  # a rating. This is MAR because the missingness predictor (firm_age) is
-  # always observed and is a different variable from the one with missing
-  # data (crefo) — consistent with Little & Rubin (2002) and Zhang (2023,
-  # p. 116). The logistic regression method is used for realistic gradual
-  # probability change (Zhang, 2023, p. 116).
-  # Domain justification: confirmed with company supervisors — new market
-  # entrants frequently lack Creditreform coverage in German B2B lending.
-  
-  # Intercepts tuned to match MCAR severity levels for fair comparison:
-  # Mild: ~8% average missing, Severe: ~28% average missing
-  # Negative coefficient on firm_age: younger firms → higher missingness prob
-  mar_intercept <- switch(severity,
-    mild   = -1.5,
-    severe = 0.1
-  )
-  
-  dat_impaired <- dat
-  n <- nrow(dat)
-  
-  # Missingness probability decreases with firm age
-  # firm_age is used on the raw scale here — older firms are progressively
-  # less likely to be missing a Crefo score
-  prob_missing <- plogis(mar_intercept - 0.05 * dat$firm_age)
-  
-  # Sanity check
-  cat("Average MAR missing rate:", round(mean(prob_missing), 3), "\n")
-  
-  # Apply missingness
-  missing_idx <- rbinom(n, 1, prob = prob_missing) == 1
-  dat_impaired$crefo[missing_idx] <- NA
-  dat_impaired$crefo_z[missing_idx] <- NA
-  
-  # Tag with metadata
-  attr(dat_impaired, "impairment") <- list(
-    type          = "MAR",
-    severity      = severity,
-    mar_intercept = mar_intercept,
-    mar_coef      = -0.05,
-    avg_miss_rate = mean(prob_missing),
-    driven_by     = "firm_age",
-    vars          = "crefo"
-  )
-  
-  dat_impaired
-}
-```
-
-```{r}
-
-cat("Mild MAR impairment:\n")
-dat_mar_mild   <- impair_mar(dat, severity = "mild")
-
-cat("\nSevere MAR impairment:\n")
-dat_mar_severe <- impair_mar(dat, severity = "severe")
-
-
-
 ```
 
 
-**Impairment 4: Measurement Noise**
+
+
+#### **Impairment 4: Measurement Noise**
 
 What is happening here:
-- our function takes in clean data, scaling data, and which severity (defaulted to "mild")
+
 - Switch: maps severity string (above) to a number
 - Mild at the moment: will have an extra SD 10% of the clean variable's SD -- severe is 50%. subject to change!!
 - Save a new copy and save the sample size in n
@@ -875,12 +830,10 @@ impair_noise <- function(dat, scaling, severity = "mild") {
   dat_impaired
 }
 
-
-
 ```
 
 
-Creating the actual datasets
+Creating the impaired datasets:
 
 ```{r}
 cat("Mild noise impairment:\n")
@@ -890,42 +843,27 @@ dat_noise_severe <- impair_noise(dat, result$scaling, severity = "severe")
 ```
 
 
-**Impairment 5: Implausible Values**
+#### **Impairment 5: Implausible Values**
 
-What is happening:
-- Taking same inputs of clean data, scaling, severity
-- Saving new copy, taking number of rows
-- Defining what it means to be "implausible": for log_assets and interest_cov this is being 6 SD away
-- Debt to equity / firm_age get invalid values (edit later)
-- Inject the values: sample picks rows randomly. (floor = for a whole number). The rows get their values replaced with implausible values
-- sprintf template:
-    It fills in left to right:
-      - `%s` ← `v` (e.g. `"log_assets"`)
-      - `%d` ← `length(corrupt_idx)` (e.g. `50`)
-      - `%.0f` ← `corrupt_rate * 100` (e.g. `5`)
-      - `%.2f` ← `implausible_values[[v]]` (e.g. `12.34`)
-- no rescale (mean and sd)
+
+Implausible values: inject a mix of domain-invalid, extreme outlier, and subtly wrong values into financial predictors.
+
+Unlike the missingness impairments, implausible values are designed to be heterogeneous — mixing obvious violations with harder-to-detect distortions. This reflects real-world data quality issues: decimal shifts, unit confusion, stale data, and system migration artefacts do not produce uniform error patterns.
+
+
+Three error types per variable:
+  1. Domain-invalid: clearly impossible values (negative age, etc.)
+  2. Extreme outlier: technically possible but far outside normal range
+  3. Subtle: within plausible range but wrong (decimal shifts, swaps)
+  
+  
+Severity controls the total % of rows corrupted per variable.
+PLACEHOLDER rates — to be confirmed with company supervisors.
+
 
 ```{r}
 
 impair_implausible <- function(dat, severity = "mild") {
-  
-  # Implausible values: inject a mix of domain-invalid, extreme outlier,
-  # and subtly wrong values into financial predictors.
-  #
-  # Unlike the missingness impairments, implausible values are designed
-  # to be heterogeneous — mixing obvious violations with harder-to-detect
-  # distortions. This reflects real-world data quality issues: decimal
-  # shifts, unit confusion, stale data, and system migration artefacts
-  # do not produce uniform error patterns.
-  #
-  # Three error types per variable:
-  #   1. Domain-invalid: clearly impossible values (negative age, etc.)
-  #   2. Extreme outlier: technically possible but far outside normal range
-  #   3. Subtle: within plausible range but wrong (decimal shifts, swaps)
-  #
-  # Severity controls the total % of rows corrupted per variable.
-  # PLACEHOLDER rates — to be confirmed with company supervisors.
   
   corrupt_rate <- switch(severity,
     mild   = 0.05,
@@ -1020,7 +958,8 @@ impair_implausible <- function(dat, severity = "mild") {
 
 ```
 
-Creating the datasets
+
+Creating the impaired datasets:
 ```{r}
 cat("Mild implausible impairment:\n")
 dat_impl_mild   <- impair_implausible(dat, severity = "mild")
@@ -1028,13 +967,12 @@ dat_impl_mild   <- impair_implausible(dat, severity = "mild")
 cat("\nSevere implausible impairment:\n")
 dat_impl_severe <- impair_implausible(dat, severity = "severe")
 
-
 ```
 
-## Doublechecking the functions before modeling
+### Function Checks Before Impairment / Modeling
 
 ```{r}
-# ── Sanity Checks: All Impairment Functions ────────────────────────────────
+# ── All Impairment Functions ────────────────────────────────
 
 # Assumes the following objects exist in your environment:
 # dat                                        (clean data)
@@ -1061,7 +999,7 @@ cat("MNAR severe:", round(mean(is.na(dat_mnar_severe$interest_cov)), 3), "\n")
 
 ```{r}
 
-# ──  MNAR getting worse by int_cov quartile ─────────────────────────
+# ──  2. MNAR getting worse by int_cov quartile ─────────────────────────
 cat("\n=== MNAR: Missing Rate by Interest Coverage Quartile ===\n")
 ic_bins <- cut(dat$interest_cov, breaks = 4)
 
@@ -1162,6 +1100,12 @@ for (nm in c("dat_mcar_mild", "dat_mcar_severe",
 ```{r}
 # ── 7. Crefo Score: Missing Rates (MAR) ───────────────────────────
 
+# crefo variable check
+cat("Mean crefo (raw):     ", round(mean(dat$crefo), 1), "\n")
+cat("SD crefo (raw):       ", round(sd(dat$crefo), 1), "\n")
+cat("Mean crefo_z:         ", round(mean(dat$crefo_z), 4), "\n")
+cat("Crefo distribution:\n")
+print(quantile(dat$crefo, probs = c(0.1, 0.25, 0.5, 0.75, 0.9)))
 
 cat("\n=== Crefo Score: Missing Rates ===\n")
 cat("MAR mild:  ", round(mean(is.na(dat_mar_mild$crefo)), 3),  "\n")
@@ -1175,6 +1119,7 @@ print(round(tapply(is.na(dat_mar_mild$crefo), age_bins, mean), 3))
 
 cat("Severe:\n")
 print(round(tapply(is.na(dat_mar_severe$crefo), age_bins, mean), 3))
+
 
 ```
 
@@ -1208,32 +1153,6 @@ for (s in 1:3) {
 }
 ```
 
-Maybe delete the below
-```{r}
-# ── 9. Sector: Frequency Table Across Datasets ───────────────────────────
-
-cat("\n=== Sector Distribution (Defensive Check) ===\n")
-sector_datasets <- list(
-  clean        = dat,
-  mcar_mild    = dat_mcar_mild,
-  mcar_severe  = dat_mcar_severe,
-  mnar_mild    = dat_mnar_mild,
-  mnar_severe  = dat_mnar_severe,
-  noise_mild   = dat_noise_mild,
-  noise_severe = dat_noise_severe,
-  impl_mild    = dat_impl_mild,
-  impl_severe  = dat_impl_severe
-)
-
-for (nm in names(sector_datasets)) {
-  props <- round(prop.table(table(sector_datasets[[nm]]$sector)), 3)
-  cat(sprintf("%-14s 1 (services): %s | 2 (manufacturing): %s | 3 (construction): %s\n",
-    nm, props["1"], props["2"], props["3"]
-  ))
-}
-
-```
-
 
 ```{r}
 # ── 10. Crefo Missing Rate by Sector ───────────────────────────────────────
@@ -1251,9 +1170,9 @@ for (nm in c("dat_mar_mild", "dat_mar_severe")) {
 ```
 
 
+### Feature reliability score on messed up data
 
-## Feature reliability score on messed up data
-
+Here we want to look at both the overall FRS score (aggregate, geometric mean) along with individual FRS components for mild and severe data.
 
 ```{r}
 
@@ -1280,7 +1199,7 @@ frs_summary <- summarize_frs(frs_all)
 
 
 
-Next: visualization
+Next: FRS visualization
 ```{r}
 
 # Quick look
@@ -1313,14 +1232,13 @@ Bewertung
 80–90 %: mittlere Datenqualität
 <80 %: kritische Datenqualität
 
-------------------------------------------------
+---
 
 Last step before modeling:
 ## Data preparation
 
 
 ```{r}
-
 prepare_for_modeling <- function(dat, scaling, winsor_bounds, method = "regression",
                                  model_formula = NULL, label = NULL) {
   
@@ -1333,7 +1251,6 @@ prepare_for_modeling <- function(dat, scaling, winsor_bounds, method = "regressi
       label <- "unlabeled"
     }
   }
-  
   
   # Preparation function: sits between impairment and model fitting.
   # Handles two tasks:
@@ -1410,7 +1327,7 @@ prepare_for_modeling <- function(dat, scaling, winsor_bounds, method = "regressi
       # --- Regression-based single imputation ---
       # Uses the PD model fitted on complete cases to back-solve for
       # missing predictor values. For each row with missingness, the
-      # target PD is set to the overall sample default rate, and the
+      # target PD is set to the overall sample default rate(??), and the
       # missing z-score is solved algebraically from the logistic
       # regression linear predictor.
       
@@ -1624,7 +1541,6 @@ dat_mnar_severe_prepped_mice <- prepare_for_modeling(dat_mnar_severe, result$sca
 Last thing: 
 Comparing FRS across imputation methods for missingness
 
-
 ```{r}
 
 regr_list <- list(
@@ -1730,6 +1646,6 @@ ggplot(frs_comp_summary[frs_comp_summary$severity == "severe", ],
 
 
 
-# PART 3: MODELING
+# **PART 3: MODELING**
 
 

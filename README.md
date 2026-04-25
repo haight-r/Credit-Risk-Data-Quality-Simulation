@@ -132,7 +132,11 @@ Different kinds of implausibility:
 
 ## Stage 3: Fixing the Data
 
-**Approaches tested:**
+**Step 1: Identifying outliers and winsorizing**
+- Winsorising using 5% of the tail (depending if variable is one or two sided)
+
+**Approaches tested for Imputation:**
+- Single regression (approach at RR)
 - Median imputation
 - MICE
 - Listwise deletion (implicit part of logistic regression)
