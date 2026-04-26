@@ -156,13 +156,13 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
 
   # Var 6: CreditReform Bonitätsindex (Crefo score)
   crefo_orig <- round(
-    300
-    + 60  * as.numeric(scale(debt_to_equity_orig))   # higher leverage → worse score
-    - 50  * as.numeric(scale(interest_cov_orig))     # better coverage → better score
-    - 30  * as.numeric(scale(log_assets_orig))       # larger firms → better score
-    + 30  * sector_2                                 # manufacturing penalty
-    + 55  * sector_3                                 # construction penalty
-    + rnorm(N, 0, 25)                                # idiosyncratic bureau noise
+    340
+    + 30  * as.numeric(scale(debt_to_equity_orig))   # higher leverage → worse score
+    - 20  * as.numeric(scale(interest_cov_orig))     # better coverage → better score
+    - 20  * as.numeric(scale(log_assets_orig))       # larger firms → better score
+    + 20  * sector_2                                 # manufacturing penalty
+    + 40  * sector_3                                 # construction penalty
+    + rnorm(N, 0, 20)                                # idiosyncratic bureau noise
   )
   
   crefo_orig <- pmin(pmax(crefo_orig, 100), 600)     # clamp to valid Crefo range
@@ -273,13 +273,13 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
         # scores annually or on event triggers, but not all firms are updated each year).
         if (runif(1) < crefo_refresh_prob) {
           crefo <- round(
-            300
-            + 60  * ((dte - debt_to_equity_mean) / debt_to_equity_sd)
-            - 50  * ((ic  - interest_cov_mean)   / interest_cov_sd)
-            - 30  * ((la  - log_assets_mean)      / log_assets_sd)
-            + 30  * sector_2[i]
-            + 55  * sector_3[i]
-            + rnorm(1, 0, 25)
+            340
+            + 30  * ((dte - debt_to_equity_mean) / debt_to_equity_sd)
+            - 20  * ((ic  - interest_cov_mean)   / interest_cov_sd)
+            - 20  * ((la  - log_assets_mean)      / log_assets_sd)
+            + 20  * sector_2[i]
+            + 40  * sector_3[i]
+            + rnorm(1, 0, 20)
           )
           crefo <- min(max(crefo, 100), 600)
         }
@@ -509,8 +509,10 @@ print(round(recovery, 4))
 
 ## Feature reliability score on clean data
 
-For our indicator variables except for sector. 
-Because this is on clean data, we should expect the scores to be near 1 (perfect quality)
+**Feature Reliability Score (FRS)** testing from Igl & Gruber's Handbuch Datenqualität (2025). A customizable data quality measure per indicator variable -- in our case, looking at 1) Completeness, 2) Plausibility, 3) Outlier Score, and 4) Cross-Field Consistency for our four continuous predictors. FRS takes the geometric mean for the listed components.
+
+
+Because this is on clean data, we should expect the scores to be near 1 (perfect quality). We get marked down slightly in Plausibility and Outliers because the FRS function is always looking to winsorize the tails (it does not take into account that we are in the perfect world).
 
 ```{r}
 source("03_compute_frs.R")
@@ -543,7 +545,7 @@ Mild: ~8% missing per cell, Severe: ~28% missing per cell
 ```{r}
 impair_mcar <- function(dat, severity = "mild") {
   
-  
+  # Mild: ~8% average missing, Severe: ~28% average missing 
   miss_prob <- switch(severity,
     mild   = 0.08,
     severe = 0.28
@@ -754,7 +756,7 @@ dat_mnar_severe <- impair_mnar(dat, severity = "severe")
 
 Measurement noise: Gaussian noise added to continuous financial predictors, creating a less-precise dataset.
 
-Only continuous predictors are corrupted (except firm_age)
+Only continuous predictors are corrupted (except firm_age).
 
 Severity defined as % of each variable's clean SD
 Mild: SD_noise = 10% of clean SD, Severe: SD_noise = 50% of clean SD
@@ -833,7 +835,7 @@ Unlike the missingness impairments, implausible values are designed to be hetero
 Three error types per variable:
   1. Domain-invalid: clearly impossible values (negative age, etc.)
   2. Extreme outlier: technically possible but far outside normal range
-  3. Subtle: within plausible range but wrong (decimal shifts, swaps [numerator / denominator, or age in months not years)
+  3. Subtle: within plausible range but wrong (decimal shifts, swaps [numerator / denominator, or age in months not years])
   
   
 Severity controls the total % of rows corrupted per variable.
@@ -960,7 +962,7 @@ dat_impl_severe <- impair_implausible(dat, result$scaling, severity = "severe")
 # ── DGP Checks ────────────────────────────────
 
 
-# Do deteriorating firms actually have rising dte and falling ic over time?
+# Do deteriorating firms actually have rising debt-equity and falling interest coverage over time?
 det_firms <- dat[dat$trajectory == "deteriorating", ]
 cat("Deteriorating firms — mean dte year 1:", 
     round(mean(det_firms$debt_to_equity[det_firms$years_on_book == 1]), 3), "\n")
@@ -1174,12 +1176,15 @@ for (nm in c("dat_mar_mild", "dat_mar_severe")) {
 
 ```
 
+---
 
 ### Feature reliability score on messed up data
 
 Here we want to look at both the overall FRS score (aggregate, geometric mean) along with individual FRS components for mild and severe data.
 
 ```{r}
+
+# Preparation Block
 
 impaired_list <- list(
   mcar_mild    = dat_mcar_mild,
@@ -1202,16 +1207,29 @@ frs_summary <- summarize_frs(frs_all)
 
 ```
 
+**FRS Summary Tables**
 
 
-Next: FRS visualization
+Score
+Bewertung
+>95 %: sehr hohe Datenqualität
+90–95 %: gute Datenqualität
+80–90 %: mittlere Datenqualität
+<80 %: kritische Datenqualität
+
+
 ```{r}
-
-# Quick look
+# Quick look by impairment
 frs_summary$by_condition
+
+# And by variable (more as Igl & Gruber intended)
 frs_summary$by_variable
+```
 
 
+**FRS visualization**
+
+```{r}
 # Heatmap: FRS by type x severity
 ggplot(frs_summary$by_condition, aes(x = severity, y = type, fill = frs)) +
   geom_tile() +
@@ -1230,16 +1248,10 @@ ggplot(frs_summary$by_variable[frs_summary$by_variable$type != "none", ],
 ```
 
 
-Score
-Bewertung
->95 %: sehr hohe Datenqualität
-90–95 %: gute Datenqualität
-80–90 %: mittlere Datenqualität
-<80 %: kritische Datenqualität
-
 ---
 
 Last step before modeling:
+
 ## Data preparation
 
 
@@ -1258,9 +1270,11 @@ prepare_for_modeling <- function(dat, scaling, winsor_bounds, method = "regressi
   }
   
   # Preparation function: sits between impairment and model fitting.
-  # Handles two tasks:
-  #   1. Impute NA values introduced by missingness impairment (MCAR/MAR/MNAR)
-  #   2. Recompute _z columns using clean scaling parameters
+  # Handles the following tasks:
+  #   1. Identify extreme outliers and converts them to missings
+  #   2. Winsorize data (two or one tailed, depending on variables)
+  #   3. Impute NA values introduced by missingness impairment (MCAR/MAR/MNAR)
+  #   4. Recompute _z columns using clean scaling parameters
   #
   # The method argument controls the imputation strategy:
   #   "regression" — regression-based single imputation (default).
@@ -1273,8 +1287,7 @@ prepare_for_modeling <- function(dat, scaling, winsor_bounds, method = "regressi
   #              Requires model_formula to be specified.
   #   "median" — univariate median imputation (PD-neutral baseline;
   #              maps to ~z=0 after standardisation, adding approximately
-  #              zero to the linear predictor). Standard practitioner
-  #              approach confirmed by Risk Research supervisors.
+  #              zero to the linear predictor). 
   #   "mice"  — multivariate imputation by chained equations (van Buuren
   #              & Groothuis-Oudshoorn, 2011). Uses predictive mean matching
   #              (pmm) as the default method, which preserves the distribution
@@ -1291,16 +1304,16 @@ prepare_for_modeling <- function(dat, scaling, winsor_bounds, method = "regressi
   # Variables that may have been impaired with missingness
   imputable_vars <- c("log_assets", "debt_to_equity", "interest_cov", "firm_age", "crefo")
   
-
-  # ---- Prep Part 1: Domain check + Winsorize (RR practitioner workflow) --------
+  # ---- Prep Part 1 & 2: Domain check + Winsorize (RR practitioner workflow) --------
   # Applied to ALL impairment types, not just implausible values.
   # A practitioner doesn't know the true impairment mechanism, so the
   # same preparation pipeline runs uniformly on every dataset.
   cat(sprintf("[%s] Data preparation:\n", label))
   
+  # This function can be found in "helper functions" -- creating NAs where implausible
   dat_prepared <- domain_to_na(dat_prepared)
   
-  # Propagate new NAs to _z columns
+  # Make sure NAs also live in _z columns
   for (v in imputable_vars) {
     z_col <- paste0(v, "_z")
     if (z_col %in% names(dat_prepared)) {
@@ -1308,9 +1321,10 @@ prepare_for_modeling <- function(dat, scaling, winsor_bounds, method = "regressi
     }
   }
   
+  # Winsorizing the data (capping the most extreme 5%)
   dat_prepared <- winsorize_vars(dat_prepared, winsor_bounds)
   
-  # Count NAs here for diagnostics BEFORE imputation
+  # Count NAs here for diagnostics BEFORE imputation (in _z and raw cols)
   predictor_vars_z <- paste0(imputable_vars, "_z")
   predictor_vars_z <- predictor_vars_z[predictor_vars_z %in% names(dat_prepared)]
   n_missing_cells_pre <- sum(is.na(dat_prepared[, predictor_vars_z]))
@@ -1319,11 +1333,8 @@ prepare_for_modeling <- function(dat, scaling, winsor_bounds, method = "regressi
   has_missing <- any(sapply(imputable_vars, function(v) any(is.na(dat_prepared[[v]]))))
   
   
-  # ---- Prep Part 2: Imputation 3 ways --------
+  # ---- Prep Part 3: Imputation 3 ways --------
   # ---- Regression (default), median, MICE ----
-  
-  
-
   
   if (has_missing) {
     
@@ -1400,8 +1411,6 @@ prepare_for_modeling <- function(dat, scaling, winsor_bounds, method = "regressi
       
       # Count total missing cells for diagnostics
 
-      
-
       cat(sprintf("[%s] Regression-based imputation: %d rows (%.1f%%) | %d cells imputed\n",
                   label,
                   length(incomplete_idx), 100 * length(incomplete_idx) / nrow(dat_prepared),
@@ -1455,25 +1464,15 @@ prepare_for_modeling <- function(dat, scaling, winsor_bounds, method = "regressi
   }
   
 
-  # ---- Prep Part 3: Rescaling --------
-    # noise = scale mean only
-    # any missingness = mean and SD
-  
-  
-
-  # Recompute all _z columns using clean scaling parameters
-  imp_meta <- attr(dat, "impairment")
-  noise_vars <- if (!is.null(imp_meta) && imp_meta$type == "noise") imp_meta$vars else character(0)
-  
+  # ---- Prep Part 4: Rescaling --------
+  # Recompute all _z columns using clean scaling parameters.
+  # Applied identically regardless of impairment type — the practitioner
+  # does not know the true mechanism, so the same standardization runs
+  # on every dataset.
   for (var in names(scaling)) {
     z_col <- paste0(var, "_z")
     if (z_col %in% names(dat_prepared)) {
-      if (var %in% noise_vars) {
-        # Mean-only: preserve inflated variance from noise impairment
-        dat_prepared[[z_col]] <- dat_prepared[[var]] - scaling[[var]]["mean"]
-      } else {
-        dat_prepared[[z_col]] <- (dat_prepared[[var]] - scaling[[var]]["mean"]) / scaling[[var]]["sd"]
-      }
+      dat_prepared[[z_col]] <- (dat_prepared[[var]] - scaling[[var]]["mean"]) / scaling[[var]]["sd"]
     }
   }
   
@@ -1519,6 +1518,8 @@ dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe,  result$scalin
 
 
 Sidequest 1: what happens if we use median or mice?
+
+
 ```{r}
 # Missingness conditions: impute NAs + recompute z-scores
 dat_mcar_mild_prepped_med   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, result$winsor_bounds, method = "median")
@@ -1538,8 +1539,6 @@ dat_mar_mild_prepped_mice    <- prepare_for_modeling(dat_mar_mild,    result$sca
 dat_mar_severe_prepped_mice  <- prepare_for_modeling(dat_mar_severe,  result$scaling, result$winsor_bounds,  method = "mice")
 dat_mnar_mild_prepped_mice   <- prepare_for_modeling(dat_mnar_mild,   result$scaling, result$winsor_bounds,  method = "mice")
 dat_mnar_severe_prepped_mice <- prepare_for_modeling(dat_mnar_severe, result$scaling, result$winsor_bounds,  method = "mice")
-
-
 
 ```
 
@@ -1585,6 +1584,7 @@ frs_compare
 
 ```
 
+And visualizations
 
 ```{r}
 

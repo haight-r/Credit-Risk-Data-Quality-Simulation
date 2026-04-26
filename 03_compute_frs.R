@@ -6,7 +6,7 @@
 #
 # The FRS is computed on the impaired dataset AFTER apply_impairment() but
 # BEFORE any rescaling or imputation. This is where a practitioner would
-# use it: as a pre-modelling diagnostic that characterises how damaged each
+# use it: as a pre-modelling diagnostic that characterizes how damaged each
 # feature is, without knowledge of the true DGP.
 #
 # For the clean baseline the FRS should return values at or very close to 1
@@ -364,7 +364,7 @@ summarize_frs <- function(frs_all) {
 
 
 # ============================================================================
-# Pretty-print helper
+# Post-calculation receipt
 # ============================================================================
 
 print_frs <- function(frs_df, digits = 3) {

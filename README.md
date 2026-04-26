@@ -45,10 +45,8 @@ This project simulates a firm-level panel dataset for credit risk modeling, incl
 - **Crefo score**
   - External credit bureau score (payment behavior)
   - Depends on prior variables
-  - Sector differences included  
+  - Sector differences included (sectors and specs to be defined) 
 
-**Note:**  
-Most features are standardized to allow anchoring after data impairments.
 
 ---
 
@@ -63,28 +61,12 @@ Financials are missing with no systematic reason.
 - Apply missingness probabilities:
   - Mild: 8%
   - Severe: 28%
-- Randomly remove values (weighted coin flip)
-- Rescale to original mean and standard deviation
-- Report missingness rates
+- Randomly remove values (weighted coin flip), no true pattern
+- Report missingness rates per column
 
 ---
 
-### Impairment 2: MNAR (Missing Not at Random)
-
-**Idea:**  
-Missingness depends on the variable itself.
-
-- Firms with poor interest coverage are less likely to report it. And if they don't report it one year, they will just stop reporting it
-- Logistic function controls missingness probability
-
-**What this does:**
-- Missing probability increases as `interest_cov` worsens
-- Apply probabilistic removal
-- Report missingness rates
-
----
-
-### Impairment 3: MAR (Missing at Random)
+### Impairment 2: MAR (Missing at Random)
 
 **Idea:**  
 Missingness depends on observed variables.
@@ -93,7 +75,25 @@ Missingness depends on observed variables.
 - Availability increases over time
 
 **Method:**  
-- Logistic regression (similar to MNAR setup)
+- Logistic regression: probability of Crefo being missing decreases as `firm_age` decreases
+- Crefo scores removed based on probabilities calculated in prior step
+- Report missingness rates
+
+---
+
+### Impairment 3: MNAR (Missing Not at Random)
+
+**Idea:**  
+Missingness depends on the variable itself.
+
+- Firms with poor interest coverage are less likely to report it. And if they don't report it one year, they will just stop reporting it
+- Logistic function controls missingness probability
+
+**What this does:**
+- Similar to MAR setup: missing probability increases as `interest_cov` worsens
+- Apply probabilistic removal
+- Report missingness rates
+
 
 ---
 
@@ -105,8 +105,8 @@ Financials contain random measurement error.
 **What this does:**
 - Mild: +10% of original standard deviation
 - Severe: +50%
-- Adds Gaussian noise
-- Rescales mean only (to preserve distortion)
+- Adds Gaussian noise and returns data
+
 
 ---
 
@@ -116,33 +116,32 @@ Financials contain random measurement error.
 Data may contain impossible or extreme values.
 
 Different kinds of implausibility:
-- Mix of obvious / subtle corruption (plausible-looking but wrong, like a debt_equity of 60 for a healthy firm)
-- Breaking cross-field consistency (going against known relationships)
-- Data entry errors (decimal place shifted)
+- 1) Domain-invalid (clearly impossible values -- like negative age or debt-equity)
+- 2) Extreme outliers (technically possible but far outside the normal range. Or even placeholder "999"s)
+- 3) Subtle mistakes (decimal place shifted, switching numerator and denominator in ratios)
 
 **What this does:**
-- Inject invalid or extreme values:
-  - `log_assets`, `interest_cov`: extreme outliers (~6 SD)
-  - `debt_to_equity`, `firm_age`: invalid negatives
-- Create:
-  - Dataset with raw implausibles
-  - Dataset with corrected values (e.g., flooring)
+- Randomly injects the three types of implausibility at different ratios
+- Mild impairment: 5% of rows damaged / severe: 15%
 
 ---
 
 ## Stage 3: Fixing the Data
 
-**Step 1: Identifying outliers and winsorizing**
-- Winsorising using 5% of the tail (depending if variable is one or two sided)
+**Step 1: Domain check: Identifying outliers and winsorizing**
+- Values that violate domain rules (e.g. negative ratios) are treated as missing
 
-**Approaches tested for Imputation:**
+**Step 2: Winsorizing**
+- Remaining extremes capped at clean-data percentile cutoffs (5% tail, one or two-sided depending on the variable)
+
+**Step 3: Imputation** (side quest 2: comparison across methods)
 - Single regression (approach at RR)
 - Median imputation
 - MICE
 - Listwise deletion (implicit part of logistic regression)
 
-**Additional step:**
-- Rescaling to maintain original distributions (except implausibles)
+**Step 4: Rescaling**
+- Z-scores recomputed using clean-data mean and SD, ensuring all coefficients remain on the original scale and any observed differences are attributable to the impairment itself, not to scale drift
 
 ---
 
