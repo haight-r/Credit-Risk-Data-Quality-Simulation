@@ -1,8 +1,8 @@
 ---
 title: "Credit Risk Data Quality Simulation"
 output:
-  pdf_document: default
   html_document: default
+  pdf_document: default
 date: "2026-03-02"
 ---
 
@@ -15,7 +15,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r, warning=FALSE, message=FALSE}
 source("02_helperfunctions.R")
 
-required_packages <- c("ggplot2", "dplyr", "tidyr", "mice")
+required_packages <- c("ggplot2", "dplyr", "tidyr", "mice", "xgboost")
 
 for (pkg in required_packages) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -40,7 +40,10 @@ Have to define both the variables and their distributions / dependencies.
 1: **Root variables**
 
 a) **firm age**: right skewed so using gamma distribution
-b) **sector**: can be 1 of 3 sectors with different probabilities
+b) **sector**: three sectors with proportions and risk properties based off real German practitioner data. 
+    - Sector 1: Services (Dienstleistungen) at 57% of the sample. Least risky with 2% default rate
+    - Sector 2: Hospitality (Gastro), 19% of the sample. Most risky, 3.6% default rate
+    - Sector 3: Manufacturing (Verarbeitendes Gewerbe), 24% of the sample. Medium risk, 2.3% default rate
 
 2: **Chained regression dependencies**
 
@@ -59,11 +62,12 @@ f) **Crefo score**. (see below) Dependent on most things above. Sometimes gets l
 This is the "ground truth" -- can be confirmed from RR
 All are standardized (change in log-odds per 1 SD increase)
 
-  beta0               <- -3.5   this is the intercept -- should be whatever the default rate is
+  beta0               <- -3.9   this is the intercept -- should be whatever the log odds of the default rate is
   beta_log_assets     <- -0.2   larger firms less likely to default
   beta_debt_to_equity <-  0.4   higher leverage = higher risk
-  beta_interest_cov   <- -0.3   higher coverage = lower risk
-  beta_sector         <-  0.2   manufacturing slightly riskier
+  beta_interest_cov   <- -0.3   higher coverage of interest expenses = lower risk
+  beta_sector2        <-  0.4   gastro is the riskiest sector
+  beta_sector3        <-  0.18  manufacturing slightly riskier
   beta_firm_age       <- -0.1   older firms slightly safer
   beta_crefo          <-  0.3   higher Crefo score → higher default risk
   
@@ -104,7 +108,7 @@ Scale: 100 (excellent) to 600 (insolvent) — higher = worse creditworthiness.
 Generated as a noisy composite of the same financial signals the bureau uses: leverage, coverage, firm size, and sector. Idiosyncratic noise (sd = 25)
 reflects bureau information not in our DGP (payment history with other creditors, legal registry data, etc.).
 
-Sector penalties: manufacturing (tbd) (30) and construction (55) reflect higher historical default rates in those sectors per Creditreform.
+Sector penalties: gastro (40) and manufacturing (20) reflect higher historical default rates in those sectors per practitioner datasets. 
 
 
 ```{r}
@@ -120,7 +124,7 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
                                       drift_sd_interest_cov   = 0.3,
                                       drift_scale             = 4.0,
                                       seasoning_period        = 1,
-                                      crefo_refresh_prob      = 0.5) {  # NEW: tunable refresh rate
+                                      crefo_refresh_prob      = 0.5) {  
   set.seed(seed)
   
   # ============================================================
@@ -133,14 +137,15 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
   
   # Var 2: Sector
   # Three sectors instead of binary
-  # 1 = services (reference), 2 = manufacturing, 3 = construction
-  # Proportions reflect a realistic B2B lending portfolio
-  sector   <- sample(1:3, N, replace = TRUE, prob = c(0.5, 0.3, 0.2))
-  sector_2 <- as.integer(sector == 2)   # manufacturing dummy
-  sector_3 <- as.integer(sector == 3)   # construction dummy
+  # 1 = services (reference), 2 = hospitality, 3 = manufacturing
+  # Proportions reflect a realistic B2B lending portfolio for a leasing company
+  sector   <- sample(1:3, N, replace = TRUE, prob = c(0.57, 0.19, 0.24))
+  sector_2 <- as.integer(sector == 2)   # Hospitality (gastro) dummy
+  sector_3 <- as.integer(sector == 3)   # Manufacturing (Verarb. Gewerbe) dummy
   
   # Var 3: Total Assets (firm size. log transformed, as per Ohlson (1980))
-  log_assets_orig     <- 8 + 0.03 * firm_age_orig + 0.3 * sector_2 + 0.1 * sector_3 + rnorm(N, 0, 1)
+  log_assets_orig <- 8 + 0.03 * firm_age_orig - 0.3 * sector_2 + 0.3 * sector_3 + rnorm(N, 0, 1)
+      # Gastro - smaller firms, manufacturing - need for more assets
   
   # Var 4: Debt-to-Equity Ratio (leverage)
   debt_to_equity_orig <- pmax(3 - 0.1 * scale(log_assets_orig) - 0.02 * scale(firm_age_orig) +   rgamma(N, shape = 1, rate = 1), 0)
@@ -155,15 +160,15 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
   
 
   # Var 6: CreditReform Bonitätsindex (Crefo score)
-  crefo_orig <- round(
-    340
-    + 30  * as.numeric(scale(debt_to_equity_orig))   # higher leverage → worse score
-    - 20  * as.numeric(scale(interest_cov_orig))     # better coverage → better score
-    - 20  * as.numeric(scale(log_assets_orig))       # larger firms → better score
-    + 20  * sector_2                                 # manufacturing penalty
-    + 40  * sector_3                                 # construction penalty
-    + rnorm(N, 0, 20)                                # idiosyncratic bureau noise
-  )
+    crefo_orig <- round(
+      300
+      + 60  * scale(debt_to_equity_orig)
+      - 50  * scale(interest_cov_orig)
+      - 30  * scale(log_assets_orig)
+      + 40  * sector_2   # Gastro: worse baseline creditworthiness
+      + 20  * sector_3   # Manufactuing: slight penalty vs services
+      + rnorm(N, 0, 25)
+    )
   
   crefo_orig <- pmin(pmax(crefo_orig, 100), 600)     # clamp to valid Crefo range
   
@@ -187,21 +192,25 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
   
   # ============================================================
   # PHASE 2: TRUE COEFFICIENTS
-  # beta0 = 4.0 
-  # probability, giving firms runway to deteriorate before defaulting
-  # rather than exiting immediately at origination.
   # All betas are on the standardized scale (change in log-odds per 1 SD).
   # ============================================================
   
-  beta0               <- -4     # the default rate we want to recover. currently 2%
+  beta0               <- -3.9   # the log-odds of the default rate we want to recover. currently around 2%
   beta_log_assets     <- -0.2   # larger companies - less risk
   beta_debt_to_equity <-  0.4   # companies with more leverage (debt) = more risk
   beta_interest_cov   <- -0.3   # more interest coverage / higher cash flows = less risk
-  beta_sector2        <-  0.2   # manufacturing vs services
-  beta_sector3        <-  0.35  # construction vs services — higher risk
-  beta_firm_age       <- -0.1   # older companies - less risk
+  beta_sector2        <-  0.4   # gastro = more risk, higher default rate
+  beta_sector3        <-  0.18  # manufacturing needs slight uplift to get to 2.3% default rate
+  beta_firm_age       <- -0.2   # older companies - less risk
   beta_crefo          <-  0.3   # higher Crefo score → higher default risk
   
+  
+  # Accounting for Gastro default risk increases in later vintages
+    # Centered on midpoint of 2005-2025 range so effect is ~zero at portfolio average
+  gastro_trend        <- 0.04  # log-odds increase per year for Gastro
+  vintage_center      <- 2015
+         # (by 2025, gastro firms get an additional +.4 on log-odds scale relative to 2025, so a meaningful increase in PD)
+      
   # ============================================================
   # PHASE 3: PANEL EXPANSION
   # ============================================================
@@ -220,6 +229,8 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
     firm_rows <- vector("list", loan_term[i])
     
     for (t in seq_len(loan_term[i])) {
+      
+      obs_year <- vintage_year[i] + t - 1
       
       # --- 3a. State-dependent drift from year 2 onward ---
       if (t > 1) {
@@ -277,8 +288,8 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
             + 30  * ((dte - debt_to_equity_mean) / debt_to_equity_sd)
             - 20  * ((ic  - interest_cov_mean)   / interest_cov_sd)
             - 20  * ((la  - log_assets_mean)      / log_assets_sd)
-            + 20  * sector_2[i]
-            + 40  * sector_3[i]
+            + 40  * sector_2[i]
+            + 20  * sector_3[i]
             + rnorm(1, 0, 20)
           )
           crefo <- min(max(crefo, 100), 600)
@@ -294,18 +305,21 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
       crefo_z <- (crefo - crefo_mean)           / crefo_sd   # NEW
       
       # --- 3c. Compute default probability and draw outcome ---
-      # CHANGED: sector dummies + crefo added to linpred
+      
+      # The linear predictor: computing log-odds of default for each firm-year
       linpred <- beta0 +
-        beta_log_assets     * la_z      +
-        beta_debt_to_equity * dte_z     +
-        beta_interest_cov   * ic_z      +
+        beta_log_assets     * la_z +
+        beta_debt_to_equity * dte_z +
+        beta_interest_cov   * ic_z +
         beta_sector2        * sector_2[i] +
         beta_sector3        * sector_3[i] +
-        beta_firm_age       * fa_z      +
-        beta_crefo          * crefo_z
+        beta_firm_age       * fa_z +
+        beta_crefo          * crefo_z +
+        gastro_trend * sector_2[i] * (obs_year - vintage_center)
+      
       pd_true <- plogis(linpred)
       
-      # --- 3d. Seasoning period: no defaults allowed in early years ---
+      # --- 3d. Seasoning period: no defaults allowed in year 1 on the books ---
       if (t <= seasoning_period) {
         default <- 0L
       } else {
@@ -316,7 +330,6 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
       repaid <- as.integer(!default & t == loan_term[i])
       
       # --- 3e. Store this firm-year row ---
-      # CHANGED: sector_2, sector_3, crefo, crefo_z added; old sector dummy removed
       firm_rows[[t]] <- data.frame(
         firm_id          = firm_id[i],
         vintage_year     = vintage_year[i],
@@ -405,9 +418,8 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
     interest_cov   = c(lower = 0,
                        upper = as.numeric(quantile(panel$interest_cov, 0.95))),
     firm_age       = c(lower = 0,
-                       upper = as.numeric(quantile(panel$firm_age, 0.95))),
-    crefo          = c(lower = as.numeric(quantile(panel$crefo, 0.025)),
-                       upper = as.numeric(quantile(panel$crefo, 0.975)))
+                       upper = as.numeric(quantile(panel$firm_age, 0.95)))
+      # Note: not winsorizing Crefo as it already has hard domain bounds 
   )
   
   
@@ -445,10 +457,10 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
       log_assets      = beta_log_assets,
       debt_to_equity  = beta_debt_to_equity,
       interest_cov    = beta_interest_cov,
-      sector_2        = beta_sector2,        # CHANGED
-      sector_3        = beta_sector3,        # CHANGED
+      sector_2        = beta_sector2,        
+      sector_3        = beta_sector3,        
       firm_age        = beta_firm_age,
-      crefo           = beta_crefo           # NEW
+      crefo           = beta_crefo           
     )
   )
 }
@@ -466,13 +478,14 @@ This creates one synthetic dataset with 5000 businesses / around 20k rows, and t
 ```{r}
 ######################################################################
 
-result <- simulate_clean_data_panel()
+result <- simulate_clean_data_panel(N = 50000) # running with high sample size as this is the showcase document
+# sorry in advance as this is slow
 
 ###################################################################
 
 dat    <- result$data
-mean(dat$default)  # default rate check - should be near the "truth"
 
+###################################################################
 
 # For later: record what our PD formula is
 pd_formula <- default ~ log_assets_z + debt_to_equity_z + interest_cov_z +
@@ -480,8 +493,6 @@ pd_formula <- default ~ log_assets_z + debt_to_equity_z + interest_cov_z +
 
 
 ```
-
-
 
 ## Model fit - perfect world
 
@@ -507,12 +518,15 @@ print(round(recovery, 4))
 
 ```
 
+
+
+
 ## Feature reliability score on clean data
 
 **Feature Reliability Score (FRS)** testing from Igl & Gruber's Handbuch Datenqualität (2025). A customizable data quality measure per indicator variable -- in our case, looking at 1) Completeness, 2) Plausibility, 3) Outlier Score, and 4) Cross-Field Consistency for our four continuous predictors. FRS takes the geometric mean for the listed components.
 
 
-Because this is on clean data, we should expect the scores to be near 1 (perfect quality). We get marked down slightly in Plausibility and Outliers because the FRS function is always looking to winsorize the tails (it does not take into account that we are in the perfect world).
+Because this is on clean data, we should expect the scores to be near 1 (perfect quality). We get marked down slightly in Plausibility and Outliers because the FRS function is always looking to winsorize the tails (it does not take into account that we are in the perfect world). Crefo does not get winsorized and is by default bounded at [100, 600] so it receives the only "perfect score".
 
 ```{r}
 source("03_compute_frs.R")
@@ -647,10 +661,10 @@ impair_mar <- function(dat, severity = "mild") {
 Creating the impaired datasets:
 ```{r}
 
-cat("Mild MAR impairment:\n")
+cat("Mild MAR impairment for Crefo:\n")
 dat_mar_mild   <- impair_mar(dat, severity = "mild")
 
-cat("\nSevere MAR impairment:\n")
+cat("\nSevere MAR impairment for Crefo:\n")
 dat_mar_severe <- impair_mar(dat, severity = "severe")
 
 ```
@@ -660,6 +674,10 @@ dat_mar_severe <- impair_mar(dat, severity = "severe")
 MNAR: missingness in interest_cov depends on interest_cov itself.
 
 Mechanism: firms with poor interest coverage strategically omit reporting. This is MNAR because missingness depends on the unobserved value of the variable itself (Little & Rubin, 2002; Zhang, 2023, p. 117).
+
+Only allowing interest coverage to become impaired for a cleaner causal story that is easier to validate (if we see coefficient distortion, we know WHICH missing variable caused it, versus having multiple missing vars x their interactions).
+
+In real life: plausibly the most likely to be affected by MNAR because it requires current earnings data that troubled firms are more likely to delay or withhold. 
 
 Persistence: once a firm's interest_cov goes missing in a given year, it remains missing for all subsequent years of that firm's life. This reflects real reporting behavior — a firm that stops disclosing bad financials does not voluntarily resume disclosure.
 
@@ -741,10 +759,10 @@ impair_mnar <- function(dat, severity = "mild") {
 
 Creating the impaired datasets:
 ```{r}
-cat("Mild MNAR impairment:\n")
+cat("Mild MNAR impairment on Interest Coverage:\n")
 dat_mnar_mild   <- impair_mnar(dat, severity = "mild")
 
-cat("\nSevere MNAR impairment:\n")
+cat("\nSevere MNAR impairment on Interest Coverage:\n")
 dat_mnar_severe <- impair_mnar(dat, severity = "severe")
 
 ```
@@ -974,7 +992,23 @@ cat("Deteriorating firms — mean ic year 3+:",
     round(mean(det_firms$interest_cov[det_firms$years_on_book >= 3]), 3), "\n")
 
 
+# ── Are sector rates / trends accurate? ────────────────────────────────
+
+# Overall sector default rates (firm-year level)
+cat("Default rates per sector (1: services / 2: gastro / 3: manufacturing):\n", 
+    tapply(dat$default, dat$sector, mean), "\n",
+    "Target: sector 1 ≈ 0.020, sector 2 ≈ 0.036, sector 3 ≈ 0.023\n")
+
+# Gastro trend over time
+cat("Over-time default rate increases for Gastro per year (note low base on the tails):\n", 
+    round(tapply(dat$default[dat$sector == 2], dat$obs_year[dat$sector == 2], mean), 3), "\n")
+
+
+
+
 ```
+
+
 
 
 
@@ -1139,7 +1173,7 @@ print(round(tapply(is.na(dat_mar_severe$crefo), age_bins, mean), 3))
 par(mfrow = c(1, 3), mar = c(4, 4, 3, 1))
 
 for (s in 1:3) {
-  label <- c("1 (Services)", "2 (Manufacturing)", "3 (Construction)")[s]
+  label <- c("1 (Services)", "2 (Gastro)", "3 (Manufacturing)")[s]
   subset <- dat$crefo[dat$sector == s]
   hist(subset, main = paste("Crefo - Sector", label),
        xlab = "crefo", col = c("grey90", "lightblue", "salmon")[s],
@@ -1151,7 +1185,7 @@ for (s in 1:3) {
 
 cat("\n=== Crefo Median by Sector ===\n")
 for (s in 1:3) {
-  label <- c("services", "manufacturing", "construction")[s]
+  label <- c("services", "gastro", "manufacturing")[s]
   cat(sprintf("Sector %d (%-15s): median = %.0f, mean = %.1f\n",
     s, label,
     median(dat$crefo[dat$sector == s]),
@@ -1169,7 +1203,7 @@ cat("\n=== Crefo Missing Rate by Sector (MAR Diagnostic) ===\n")
 for (nm in c("dat_mar_mild", "dat_mar_severe")) {
   d <- get(nm)
   miss_by_sector <- tapply(is.na(d$crefo), d$sector, mean)
-  cat(sprintf("%-14s 1 (services): %.3f | 2 (manufacturing): %.3f | 3 (construction): %.3f\n",
+  cat(sprintf("%-14s 1 (services): %.3f | 2 (gastro): %.3f | 3 (manufacturing): %.3f\n",
     nm, miss_by_sector["1"], miss_by_sector["2"], miss_by_sector["3"]
   ))
 }
@@ -1517,11 +1551,11 @@ dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe,  result$scalin
 
 
 
-Sidequest 1: what happens if we use median or mice?
+**Sidequest 1: what happens if we use median or mice?**
 
 
 ```{r}
-# Missingness conditions: impute NAs + recompute z-scores
+# Missingness conditions fixed with MEDIAN imputation: impute NAs + recompute z-scores
 dat_mcar_mild_prepped_med   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, result$winsor_bounds, method = "median")
 dat_mcar_severe_prepped_med <- prepare_for_modeling(dat_mcar_severe, result$scaling, result$winsor_bounds,  method = "median")
 dat_mar_mild_prepped_med    <- prepare_for_modeling(dat_mar_mild,    result$scaling, result$winsor_bounds,  method = "median")
@@ -1532,7 +1566,7 @@ dat_mnar_severe_prepped_med <- prepare_for_modeling(dat_mnar_severe, result$scal
 
 
 ```{r}
-# Missingness conditions: impute NAs + recompute z-scores
+# Missingness conditions fixed with MICE imputation: impute NAs + recompute z-scores
 dat_mcar_mild_prepped_mice   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, result$winsor_bounds,  method = "mice")
 dat_mcar_severe_prepped_mice <- prepare_for_modeling(dat_mcar_severe, result$scaling, result$winsor_bounds,  method = "mice")
 dat_mar_mild_prepped_mice    <- prepare_for_modeling(dat_mar_mild,    result$scaling, result$winsor_bounds,  method = "mice")
@@ -1863,7 +1897,7 @@ Key structural differences from glm that matter here:
   (stage = "impaired") use *all* rows, including those with NAs --
   unlike glm, which drops them via complete-case analysis. This is a
   structurally different response to the same damage and part of the
-  model comparison story.
+  model comparison story
 - **No coefficients.** XGBoost produces feature importance (gain-based)
   rather than interpretable betas. We store importance tables instead of
   coefficient recovery, and the real model comparison happens downstream
@@ -1874,20 +1908,10 @@ Key structural differences from glm that matter here:
   Any performance difference is then attributable to the data, not to
   tuning. The defaults below are conservative and standard for binary
   credit risk: shallow trees, moderate learning rate, early stopping to
-  avoid overfitting.
+  avoid overfitting.(!! check with Sophie)
 
 ```{r, warning=FALSE, message=FALSE}
 
-if (!requireNamespace("xgboost", quietly = TRUE)) install.packages("xgboost")
-install.packages("xgboost", repos = "https://cloud.r-project.org")
-library(xgboost)
-
-Sys.getenv("http_proxy")
-Sys.getenv("https_proxy")
-install.packages("xgboost", type = "binary")
-
-url.show("https://cloud.r-project.org")
-readLines("https://cloud.r-project.org", n = 1)
 
 # ── Fit XGBoost across all conditions ──────────────────────────────────
 
@@ -1902,7 +1926,7 @@ fit_xgboost_models <- function(clean_data,
                                  eval_metric      = "logloss",
                                  max_depth        = 3,
                                  eta              = 0.1,
-                                 subsample        = 0.8,
+                                 subsample        = 0.8, # Practitioner realistic -- adding randomness
                                  colsample_bytree = 0.8,
                                  min_child_weight = 5
                                ),
@@ -1941,7 +1965,7 @@ fit_xgboost_models <- function(clean_data,
 
     dtrain <- xgb.DMatrix(data = X, label = y)
 
-    # Train with early stopping using the training set as watchlist.
+    # Train with early stopping using the training set as evals (watchlist).
     # In a single-run simulation (not CV), this prevents gross overfitting
     # while keeping the pipeline simple. The evaluation story comes later
     # with out-of-sample prediction on clean holdout data.
@@ -1950,7 +1974,7 @@ fit_xgboost_models <- function(clean_data,
       params    = params,
       data      = dtrain,
       nrounds   = nrounds,
-      watchlist = list(train = dtrain),
+      evals =  list(train = dtrain),
       early_stopping_rounds = early_stopping,
       verbose   = 0
     )
@@ -2061,3 +2085,241 @@ ggplot(xgb_results$importance,
 
 ```
 
+
+## 3.3 PD Grading
+
+### Overview
+
+After fitting models, the next step in a real-world PD framework is to
+assign each firm to a risk grade. This maps continuous predicted PDs onto
+a discrete rating scale, analogous to how Moody's maps default
+probabilities to letter grades (Aaa through C).
+
+We use a 10-grade scale (1 = safest, 10 = riskiest) with PD boundaries
+derived from Moody's one-year idealized corporate default rates. The
+mapping is:
+
+| Grade | Moody's Equivalent | PD Upper Bound |
+|-------|-------------------|----------------|
+| 1     | Aaa               | 0.001%         |
+| 2     | Aa                | 0.06%          |
+| 3     | A                 | 0.11%          |
+| 4     | Baa               | 0.30%          |
+| 5     | Ba (upper)        | 0.70%          |
+| 6     | Ba (lower)        | 1.50%          |
+| 7     | B (upper)         | 3.00%          |
+| 8     | B (lower)         | 8.00%          |
+| 9     | Caa               | 15.00%         |
+| 10    | Ca-C / Default    | 100.00%        |
+
+Given the DGP's ~2% average default rate, most firms should cluster in
+grades 5-8, with relatively few in the tails. This is realistic for a
+B2B/SME portfolio.
+
+The critical design choice: **bucket boundaries are fixed and model-
+independent.** The same PD thresholds are applied to all conditions, all
+stages, and both model types. This means a "grade 6" carries the same
+PD interpretation everywhere, and any shift in grade distributions
+across conditions is attributable to the model + data, not to a moving
+scale.
+
+This also enables **grade migration analysis**: comparing which grade
+each firm receives under clean vs. impaired vs. prepared conditions. A
+firm graded 5 on clean data but 7 on impaired data has been 
+misclassified by the damage -- and whether preparation pulls it back
+toward 5 is the key question.
+
+```{r}
+
+# ── PD Grading Function ───────────────────────────────────────────────
+
+assign_pd_grades <- function(models,
+                             datasets,
+                             formula,
+                             model_type = c("glm", "xgboost")) {
+
+  model_type <- match.arg(model_type)
+  response   <- all.vars(formula)[1]
+  predictors <- all.vars(formula)[-1]
+
+  # Moody's-aligned PD grade boundaries (upper bounds, inclusive)
+  grade_breaks <- c(0, 0.00001, 0.0006, 0.0011, 0.003,
+                    0.007, 0.015, 0.03, 0.08, 0.15, 1.0)
+  grade_labels <- as.character(1:10)
+
+  results <- vector("list", length(models))
+  names(results) <- names(models)
+
+  for (key in names(models)) {
+
+    mod <- models[[key]]
+    d   <- datasets[[key]]
+
+    # Predict PDs
+    if (model_type == "glm") {
+      pd_pred <- predict(mod, newdata = d, type = "response")
+    } else {
+      X <- as.matrix(d[, predictors, drop = FALSE])
+      pd_pred <- predict(mod, xgb.DMatrix(data = X))
+    }
+
+    # Assign grades using fixed Moody's-aligned boundaries
+    grade <- cut(pd_pred,
+                 breaks  = grade_breaks,
+                 labels  = grade_labels,
+                 include.lowest = TRUE,
+                 right   = TRUE)
+
+    results[[key]] <- data.frame(
+      key     = key,
+      firm_id = if ("firm_id" %in% names(d)) d$firm_id else seq_len(nrow(d)),
+      year    = if ("year" %in% names(d)) d$year else NA,
+      pd_pred = pd_pred,
+      grade   = as.integer(as.character(grade)),
+      default = d[[response]],
+      stringsAsFactors = FALSE
+    )
+  }
+
+  # Stack everything
+  graded <- do.call(rbind, results)
+  rownames(graded) <- NULL
+
+  # Parse key into stage + condition
+  graded$stage <- ifelse(graded$key == "clean", "clean",
+                         ifelse(grepl("^imp_", graded$key), "impaired", "prepared"))
+  graded$condition <- ifelse(graded$key == "clean", "clean",
+                             sub("^imp_|^prep_", "", graded$key))
+  graded$type <- ifelse(graded$condition == "clean", "clean",
+                        sub("_mild$|_severe$", "", graded$condition))
+  graded$severity <- ifelse(graded$condition == "clean", "none",
+                            ifelse(grepl("severe", graded$condition), "severe", "mild"))
+
+  graded
+}
+
+```
+
+Running it for both models -- note that we need to pass matched lists of
+models and datasets so that each model scores its own training data:
+
+```{r}
+
+# Build matched dataset lists (same structure as the model keys)
+all_datasets <- c(
+  list(clean = dat),
+  setNames(
+    lapply(names(impaired_list), function(nm) impaired_list[[nm]]),
+    paste0("imp_", names(impaired_list))
+  ),
+  setNames(
+    lapply(names(prep_regr_list), function(nm) prep_regr_list[[nm]]),
+    paste0("prep_", names(prep_regr_list))
+  )
+)
+
+# Grade all models
+glm_grades <- assign_pd_grades(
+  models     = glm_results$models,
+  datasets   = all_datasets,
+  formula    = pd_formula,
+  model_type = "glm"
+)
+
+xgb_grades <- assign_pd_grades(
+  models     = xgb_results$models,
+  datasets   = all_datasets,
+  formula    = pd_formula,
+  model_type = "xgboost"
+)
+
+```
+
+
+### Grade distributions: how does impairment shift the rating landscape?
+
+The grade distribution under clean data is the "true" portfolio
+profile. Impairment should distort this -- damaged data may push firms
+into the wrong grade, either overstating risk (conservative bias) or
+understating it (dangerous). The question at each panel is: does
+preparation restore the clean-data distribution?
+
+```{r, fig.width=12, fig.height=8}
+
+# ── Grade distribution comparison: Logistic GLM ─────────────────────────────────
+
+condition_order <- c("clean",
+                     "mcar_mild", "mcar_severe",
+                     "mar_mild",  "mar_severe",
+                     "mnar_mild", "mnar_severe",
+                     "noise_mild", "noise_severe",
+                     "impl_mild", "impl_severe")
+
+glm_grades$condition <- factor(glm_grades$condition, levels = condition_order)
+glm_grades$stage     <- factor(glm_grades$stage, levels = c("clean", "impaired", "prepared"))
+
+# Compute proportions per condition x stage x grade
+glm_grade_dist <- glm_grades %>%
+  group_by(condition, stage, grade) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(condition, stage) %>%
+  mutate(pct = n / sum(n)) %>%
+  ungroup()
+
+ggplot(glm_grade_dist,
+       aes(x = factor(grade), y = pct, fill = stage)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+  facet_wrap(~ condition, ncol = 3) +
+  scale_fill_manual(values = c(clean = "grey40", impaired = "#e74c3c", prepared = "#2ecc71")) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title    = "PD Grade Distribution: Logistic Regression",
+       subtitle = "Moody's-aligned 10-grade scale | How does impairment shift the rating landscape?",
+       x = "PD Grade (1=safest, 10=riskiest)", y = "Share of firms") +
+  theme_minimal() +
+  theme(strip.text = element_text(face = "bold"),
+        legend.position = "bottom")
+
+```
+
+```{r}
+
+# ── Grade distribution comparison: XGBoost ─────────────────────────────
+
+xgb_grades$condition <- factor(xgb_grades$condition, levels = condition_order)
+xgb_grades$stage     <- factor(xgb_grades$stage, levels = c("clean", "impaired", "prepared"))
+
+xgb_grade_dist <- xgb_grades %>%
+  group_by(condition, stage, grade) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(condition, stage) %>%
+  mutate(pct = n / sum(n)) %>%
+  ungroup()
+
+ggplot(xgb_grade_dist,
+       aes(x = factor(grade), y = pct, fill = stage)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+  facet_wrap(~ condition, ncol = 3) +
+  scale_fill_manual(values = c(clean = "grey40", impaired = "#e74c3c", prepared = "#2ecc71")) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title    = "PD Grade Distribution: XGBoost",
+       subtitle = "Moody's-aligned 10-grade scale | No NAs -- XGBoost handles missing values natively",
+       x = "PD Grade (1=safest, 10=riskiest)", y = "Share of firms") +
+  theme_minimal() +
+  theme(strip.text = element_text(face = "bold"),
+        legend.position = "bottom")
+
+
+```
+
+
+
+# Part 4: Evaluation Metrics
+
+
+
+
+
+
+
+
+# Part 5: Monte Carlo Sampling

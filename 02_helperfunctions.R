@@ -124,16 +124,6 @@ winsorize_vars <- function(dat, winsor_bounds) {
       cat(sprintf("  Winsorize firm_age: %d high (> %.2f)\n", n_hi, b["upper"]))
   }
   
-  # --- crefo (two-sided) ---------------------------------------------------
-  b <- winsor_bounds$crefo
-  if (any(!is.na(dat$crefo))) {
-    n_lo <- sum(dat$crefo < b["lower"], na.rm = TRUE)
-    n_hi <- sum(dat$crefo > b["upper"], na.rm = TRUE)
-    dat$crefo <- pmin(pmax(dat$crefo, b["lower"]), b["upper"])
-    if (n_lo + n_hi > 0)
-      cat(sprintf("  Winsorize crefo: %d low (< %.0f), %d high (> %.0f)\n",
-                  n_lo, b["lower"], n_hi, b["upper"]))
-  }
   
   dat
 }

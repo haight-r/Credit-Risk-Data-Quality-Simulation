@@ -183,11 +183,19 @@ compute_frs <- function(dat,
     if (n_obs > 0) {
       if (outlier_method == "percentile") {
         if (is.null(winsor_bounds) || !(v %in% names(winsor_bounds))) {
-          stop(sprintf("winsor_bounds required for percentile method (variable: %s)", v))
+          # Variable not in winsor_bounds (e.g. crefo with hard domain bounds).
+          # Fall back to plausibility bounds as outlier threshold.
+          if (v %in% names(plausibility_bounds)) {
+            b_lo <- plausibility_bounds[[v]][1]
+            b_hi <- plausibility_bounds[[v]][2]
+            n_outlier <- sum(x_obs < b_lo | x_obs > b_hi)
+          } else {
+            n_outlier <- 0
+          }
+        } else {
+          b <- winsor_bounds[[v]]
+          n_outlier <- sum(x_obs < b["lower"] | x_obs > b["upper"])
         }
-        b <- winsor_bounds[[v]]
-        n_outlier <- sum(x_obs < b["lower"] | x_obs > b["upper"])
-        
       } else if (outlier_method == "zscore") {
         z_vals    <- (x_obs - mean(x_obs)) / sd(x_obs)
         n_outlier <- sum(abs(z_vals) > outlier_k)
