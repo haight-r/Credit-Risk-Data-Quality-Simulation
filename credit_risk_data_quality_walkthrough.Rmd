@@ -1374,84 +1374,93 @@ prepare_for_modeling <- function(dat, scaling, winsor_bounds, method = "regressi
     
     if (method == "regression") {
       
-      # --- Regression-based single imputation ---
-      # Uses the PD model fitted on complete cases to back-solve for
-      # missing predictor values. For each row with missingness, the
-      # target PD is set to the overall sample default rate(??), and the
-      # missing z-score is solved algebraically from the logistic
-      # regression linear predictor.
-      
+
       if (is.null(model_formula)) {
         stop("model_formula is required for regression-based imputation.")
       }
-      
+
       outcome_var <- all.vars(model_formula)[1]
       predictor_vars <- all.vars(model_formula)[-1]
-      
+
       # Fit on complete cases
       complete_idx <- complete.cases(dat_prepared[, c(outcome_var, predictor_vars)])
       n_complete <- sum(complete_idx)
-      
+
       if (n_complete < 50) {
         warning("Fewer than 50 complete cases — regression-based imputation may be unstable.")
       }
-      
+
       model_fit <- glm(model_formula, data = dat_prepared[complete_idx, ],
                         family = binomial())
       betas <- coef(model_fit)
-      
+
       # Target: overall default rate from complete cases
       target_p <- mean(dat_prepared[[outcome_var]][complete_idx], na.rm = TRUE)
       target_logit <- log(target_p / (1 - target_p))
-      
-      # Impute each incomplete row
-      incomplete_idx <- which(!complete_idx & !is.na(dat_prepared[[outcome_var]]))
+
       z_cap <- 4
-      
-      for (i in incomplete_idx) {
-        missing_vars <- predictor_vars[is.na(dat_prepared[i, predictor_vars])]
-        if (length(missing_vars) == 0) next
-        
-        # Sequential imputation: solve one variable at a time
-        for (mv in missing_vars) {
-          currently_observed <- predictor_vars[!is.na(dat_prepared[i, predictor_vars])]
-          
-          eta_partial <- betas["(Intercept)"]
-          for (ov in currently_observed) {
-            eta_partial <- eta_partial + betas[ov] * as.numeric(dat_prepared[i, ov])
-          }
-          
-          beta_mv <- betas[mv]
-          
-          if (!is.na(beta_mv) && abs(beta_mv) > 1e-8) {
-            imputed_val <- as.numeric((target_logit - eta_partial) / beta_mv)
-            imputed_val <- pmax(pmin(imputed_val, z_cap), -z_cap)
-          } else {
-            # beta ≈ 0: variable has no predictive power, fall back to z-score mean
-            imputed_val <- 0
-          }
-          
-          dat_prepared[i, mv] <- imputed_val
-          
-          # Write back corresponding raw variable so z-score recomputation
-          # at the end of this function stays consistent
-          raw_var <- sub("_z$", "", mv)
-          if (raw_var %in% names(scaling) && raw_var %in% names(dat_prepared)) {
-            dat_prepared[i, raw_var] <- scaling[[raw_var]]["mean"] +
-                                        imputed_val * scaling[[raw_var]]["sd"]
-          }
+
+      # ── Vectorized imputation ──────────────────────────────────────
+      # Instead of looping row-by-row, we process one missing-variable
+      # at a time across all rows that need it. For each variable mv:
+      #   1. Find all rows where mv is NA
+      #   2. Compute eta_partial for those rows using matrix multiplication
+      #      on the observed (non-NA) predictors, substituting 0 for any
+      #      other predictor that's also NA (equivalent to the sequential
+      #      approach where earlier-imputed values start at ~0)
+      #   3. Solve: imputed_val = (target_logit - eta_partial) / beta_mv
+      #   4. Clamp to [-z_cap, z_cap] and write back
+
+      # Work on a matrix copy for speed (avoids repeated data.frame indexing)
+      pred_mat <- as.matrix(dat_prepared[, predictor_vars, drop = FALSE])
+
+      for (mv in predictor_vars) {
+        na_rows <- which(is.na(pred_mat[, mv]))
+        if (length(na_rows) == 0) next
+
+        beta_mv <- betas[mv]
+
+        if (is.na(beta_mv) || abs(beta_mv) < 1e-8) {
+          # beta ≈ 0: fall back to z-score mean
+          pred_mat[na_rows, mv] <- 0
+        } else {
+          # Build the partial linear predictor from all OTHER predictors
+          other_vars <- setdiff(predictor_vars, mv)
+          sub_mat <- pred_mat[na_rows, other_vars, drop = FALSE]
+
+          # Replace any remaining NAs with 0 (same as sequential: unimputed
+          # variables contribute nothing to eta_partial)
+          sub_mat[is.na(sub_mat)] <- 0
+
+          other_betas <- betas[other_vars]
+          eta_partial <- as.numeric(betas["(Intercept)"] + sub_mat %*% other_betas)
+
+          imputed_vals <- (target_logit - eta_partial) / beta_mv
+          imputed_vals <- pmax(pmin(imputed_vals, z_cap), -z_cap)
+
+          pred_mat[na_rows, mv] <- imputed_vals
         }
       }
-      
-      # Count total missing cells for diagnostics
 
+      # Write imputed z-scores back to data.frame
+      for (mv in predictor_vars) {
+        dat_prepared[[mv]] <- pred_mat[, mv]
+
+        # Write back raw variable for consistency with rescaling step
+        raw_var <- sub("_z$", "", mv)
+        if (raw_var %in% names(scaling) && raw_var %in% names(dat_prepared)) {
+          dat_prepared[[raw_var]] <- scaling[[raw_var]]["mean"] +
+                                     pred_mat[, mv] * scaling[[raw_var]]["sd"]
+        }
+      }
+
+      incomplete_count <- sum(!complete_idx & !is.na(dat_prepared[[outcome_var]]))
       cat(sprintf("[%s] Regression-based imputation: %d rows (%.1f%%) | %d cells imputed\n",
                   label,
-                  length(incomplete_idx), 100 * length(incomplete_idx) / nrow(dat_prepared),
+                  incomplete_count, 100 * incomplete_count / nrow(dat_prepared),
                   n_missing_cells_pre))
       cat(sprintf("  Target PD: %.4f (logit: %.3f) | Complete cases for fit: %d\n",
             target_p, target_logit, n_complete))
-      
       
     } else if (method == "median") {
       
@@ -1576,7 +1585,7 @@ dat_mnar_severe_prepped_mice <- prepare_for_modeling(dat_mnar_severe, result$sca
 
 ```
 
-Last thing: 
+Last thing before modeling: 
 Comparing FRS across imputation methods for missingness
 
 ```{r}
@@ -2200,6 +2209,8 @@ assign_pd_grades <- function(models,
 
 ```
 
+
+
 Running it for both models -- note that we need to pass matched lists of
 models and datasets so that each model scores its own training data:
 
@@ -2246,34 +2257,49 @@ preparation restore the clean-data distribution?
 
 ```{r, fig.width=12, fig.height=8}
 
-# ── Grade distribution comparison: Logistic GLM ─────────────────────────────────
+# ── Grade distribution comparison: GLM ─────────────────────────────────
 
-condition_order <- c("clean",
-                     "mcar_mild", "mcar_severe",
+condition_order <- c("mcar_mild", "mcar_severe",
                      "mar_mild",  "mar_severe",
                      "mnar_mild", "mnar_severe",
                      "noise_mild", "noise_severe",
                      "impl_mild", "impl_severe")
 
-glm_grades$condition <- factor(glm_grades$condition, levels = condition_order)
-glm_grades$stage     <- factor(glm_grades$stage, levels = c("clean", "impaired", "prepared"))
+# Get the clean distribution once
+clean_dist <- glm_grades %>%
+  filter(condition == "clean") %>%
+  group_by(grade) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(pct = n / sum(n),
+         stage = "clean")
 
-# Compute proportions per condition x stage x grade
-glm_grade_dist <- glm_grades %>%
+# Replicate clean distribution into every impaired condition
+clean_repeated <- do.call(rbind, lapply(condition_order, function(cond) {
+  clean_dist %>% mutate(condition = cond)
+}))
+
+# Compute impaired + prepared distributions (excluding the clean panel)
+impaired_dist <- glm_grades %>%
+  filter(condition != "clean") %>%
   group_by(condition, stage, grade) %>%
   summarise(n = n(), .groups = "drop") %>%
   group_by(condition, stage) %>%
   mutate(pct = n / sum(n)) %>%
   ungroup()
 
+# Combine
+glm_grade_dist           <- bind_rows(clean_repeated, impaired_dist)
+glm_grade_dist$condition <- factor(glm_grade_dist$condition, levels = condition_order)
+glm_grade_dist$stage     <- factor(glm_grade_dist$stage, levels = c("clean", "impaired", "prepared"))
+
 ggplot(glm_grade_dist,
        aes(x = factor(grade), y = pct, fill = stage)) +
   geom_col(position = position_dodge(width = 0.7), width = 0.6) +
-  facet_wrap(~ condition, ncol = 3) +
+  facet_wrap(~ condition, ncol = 2) +
   scale_fill_manual(values = c(clean = "grey40", impaired = "#e74c3c", prepared = "#2ecc71")) +
   scale_y_continuous(labels = scales::percent_format()) +
   labs(title    = "PD Grade Distribution: Logistic Regression",
-       subtitle = "Moody's-aligned 10-grade scale | How does impairment shift the rating landscape?",
+       subtitle = "Grey = clean baseline repeated in every panel for comparison",
        x = "PD Grade (1=safest, 10=riskiest)", y = "Share of firms") +
   theme_minimal() +
   theme(strip.text = element_text(face = "bold"),
@@ -2281,28 +2307,51 @@ ggplot(glm_grade_dist,
 
 ```
 
-```{r}
+```{r, fig.width=12, fig.height=8}
 
 # ── Grade distribution comparison: XGBoost ─────────────────────────────
 
-xgb_grades$condition <- factor(xgb_grades$condition, levels = condition_order)
-xgb_grades$stage     <- factor(xgb_grades$stage, levels = c("clean", "impaired", "prepared"))
+condition_order <- c("mcar_mild", "mcar_severe",
+                     "mar_mild",  "mar_severe",
+                     "mnar_mild", "mnar_severe",
+                     "noise_mild", "noise_severe",
+                     "impl_mild", "impl_severe")
 
-xgb_grade_dist <- xgb_grades %>%
+# Get the clean distribution once
+clean_dist_xgb <- xgb_grades %>%
+  filter(condition == "clean") %>%
+  group_by(grade) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(pct = n / sum(n),
+         stage = "clean")
+
+# Replicate clean distribution into every impaired condition
+clean_repeated_xgb <- do.call(rbind, lapply(condition_order, function(cond) {
+  clean_dist_xgb %>% mutate(condition = cond)
+}))
+
+# Compute impaired + prepared distributions (excluding the clean panel)
+impaired_dist_xgb <- xgb_grades %>%
+  filter(condition != "clean") %>%
   group_by(condition, stage, grade) %>%
   summarise(n = n(), .groups = "drop") %>%
   group_by(condition, stage) %>%
   mutate(pct = n / sum(n)) %>%
   ungroup()
 
+# Combine
+xgb_grade_dist <- bind_rows(clean_repeated_xgb, impaired_dist_xgb)
+xgb_grade_dist$condition <- factor(xgb_grade_dist$condition, levels = condition_order)
+xgb_grade_dist$stage     <- factor(xgb_grade_dist$stage, levels = c("clean", "impaired", "prepared"))
+
 ggplot(xgb_grade_dist,
        aes(x = factor(grade), y = pct, fill = stage)) +
   geom_col(position = position_dodge(width = 0.7), width = 0.6) +
-  facet_wrap(~ condition, ncol = 3) +
+  facet_wrap(~ condition, ncol = 2) +
   scale_fill_manual(values = c(clean = "grey40", impaired = "#e74c3c", prepared = "#2ecc71")) +
   scale_y_continuous(labels = scales::percent_format()) +
   labs(title    = "PD Grade Distribution: XGBoost",
-       subtitle = "Moody's-aligned 10-grade scale | No NAs -- XGBoost handles missing values natively",
+       subtitle = "Grey = clean baseline repeated in every panel | No NAs — XGBoost handles missing values natively",
        x = "PD Grade (1=safest, 10=riskiest)", y = "Share of firms") +
   theme_minimal() +
   theme(strip.text = element_text(face = "bold"),
