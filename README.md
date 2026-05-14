@@ -25,10 +25,11 @@ This project simulates a firm-level panel dataset for credit risk modeling, incl
 
 **Pure values**
 - Firm age (skewed toward younger firms)
-- Sector: hree sectors with proportions and risk properties based off real German practitioner data.
+- Sector: three sectors with proportions and risk properties based off real German practitioner data.
     - Sector 1: Services (Dienstleistungen) at 57% of the sample. Least risky with 2% default rate
     - Sector 2: Hospitality (Gastro), 19% of the sample. Most risky, 3.6% default rate
     - Sector 3: Manufacturing (Verarbeitendes Gewerbe), 24% of the sample. Medium risk, 2.3% default rate
+
 
 **Chained regression dependencies**
 - **Log assets**
@@ -58,7 +59,7 @@ This project simulates a firm-level panel dataset for credit risk modeling, incl
 ### Impairment 1: MCAR (Missing Completely at Random)
 
 **Idea:**  
-Financials are missing with no systematic reason.
+Financials (`log_assets`, `debt_to_equity`, `interest_cov`, and also `firm_age`) are missing with no systematic reason.
 
 **What this does:**
 - Apply missingness probabilities:
@@ -74,8 +75,8 @@ Financials are missing with no systematic reason.
 **Idea:**  
 Missingness depends on observed variables.
 
-- Crefo scores missing for newer firms
-- Availability increases over time
+- Crefo scores are more likely to be missing for newer firms (`firm_age` is our observed var)
+- Availability of Crefo scores increases over time
 
 **Method:**  
 - Logistic regression: probability of Crefo being missing decreases as `firm_age` decreases
@@ -89,12 +90,13 @@ Missingness depends on observed variables.
 **Idea:**  
 Missingness depends on the variable itself.
 
-- Firms with poor interest coverage are less likely to report it. And if they don't report it one year, they will just stop reporting it
-- Logistic function controls missingness probability
+- Firms with poor interest coverage (a sign of earnings / cash flow weakness) are less likely to report it. 
+    - And if they don't report it one year, they will just stop reporting it
+
 
 **What this does:**
 - Similar to MAR setup: missing probability increases as `interest_cov` worsens
-- Apply probabilistic removal
+- Logistic function controls the probability of `interest_cov` going missing
 - Report missingness rates
 
 
@@ -103,7 +105,7 @@ Missingness depends on the variable itself.
 ### Impairment 4: Measurement Noise
 
 **Idea:**  
-Financials contain random measurement error.
+Financials contain random measurement error, reducing precision in the data.
 
 **What this does:**
 - Mild: +10% of original standard deviation
