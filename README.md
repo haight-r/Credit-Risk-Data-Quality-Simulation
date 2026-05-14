@@ -110,8 +110,8 @@ Missingness depends on the variable itself.
 Financials contain random measurement error, reducing precision in the data.
 
 **What this does:**
-- Mild: +10% of original standard deviation
-- Severe: +50%
+- Mild: +30% of original standard deviation
+- Severe: +100%
 - Adds Gaussian noise and returns data
 
 

@@ -472,7 +472,7 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
 
 ## Simulation
 
-This creates one synthetic dataset with 5000 businesses / around 20k rows, and tests the default rate -- should be around 1-5%.
+This creates one synthetic dataset with 5000 businesses / around 20k rows, and tests the default rate -- should be around 2.4%.
 
 
 ```{r}
@@ -777,7 +777,7 @@ Measurement noise: Gaussian noise added to continuous financial predictors, crea
 Only continuous predictors are corrupted (except firm_age).
 
 Severity defined as % of each variable's clean SD
-Mild: SD_noise = 10% of clean SD, Severe: SD_noise = 50% of clean SD
+Mild: SD_noise = +/-30% of clean SD, Severe: SD_noise = +/-100% of clean SD
 
 
 ```{r}
@@ -787,8 +787,8 @@ impair_noise <- function(dat, scaling, severity = "mild") {
   
 
   noise_sd_multiplier <- switch(severity,
-    mild   = 0.10,
-    severe = 0.50
+    mild   = 0.30,
+    severe = 1.00
   )
   
   dat_impaired <- dat
