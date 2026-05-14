@@ -1,5 +1,7 @@
 # Credit Risk Data Quality Simulation
 
+**How does data quality impairment affect the performance and robustness of one-year through-the-cycle PD models, and can standard data preparation techniques recover the lost signal?**
+
 This project simulates a firm-level panel dataset for credit risk modeling, including both a clean **"perfect world" dataset** and systematically impaired datasets to study the impact of data quality on model performance (recovery & robustness).
 
 ---
