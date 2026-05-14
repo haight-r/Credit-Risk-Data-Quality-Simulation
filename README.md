@@ -12,7 +12,7 @@ This project simulates a firm-level panel dataset for credit risk modeling, incl
 #### Part 1: Creating the Perfect World
 
 **What this does:**
-- Creates 5,000 firms with loans from 1–7 years (vintages 2005–2025)
+- Creates 50,000 firms with loans from 1–7 years (vintages 2005–2025)
 - Firms evolve over time:
   - Stable (random walk)
   - Worse (20%, negative drift)
@@ -25,7 +25,10 @@ This project simulates a firm-level panel dataset for credit risk modeling, incl
 
 **Pure values**
 - Firm age (skewed toward younger firms)
-- Sector (currently three sectors)
+- Sector: hree sectors with proportions and risk properties based off real German practitioner data.
+    - Sector 1: Services (Dienstleistungen) at 57% of the sample. Least risky with 2% default rate
+    - Sector 2: Hospitality (Gastro), 19% of the sample. Most risky, 3.6% default rate
+    - Sector 3: Manufacturing (Verarbeitendes Gewerbe), 24% of the sample. Medium risk, 2.3% default rate
 
 **Chained regression dependencies**
 - **Log assets**
@@ -45,7 +48,7 @@ This project simulates a firm-level panel dataset for credit risk modeling, incl
 - **Crefo score**
   - External credit bureau score (payment behavior)
   - Depends on prior variables
-  - Sector differences included (sectors and specs to be defined) 
+  - Sector differences included -- higher scores for Gastro, lower for services
 
 
 ---
@@ -145,7 +148,9 @@ Different kinds of implausibility:
 
 ---
 
-## Feature Robustness Score (FRS)
+## Feature Reliability Score (FRS)
+
+From Igl & Grüber's Handbuch Datenqualität (2025)
 
 Custom function based on:
 - Completeness
@@ -158,8 +163,38 @@ Custom function based on:
 
 **FRS is tested on clean, impaired, and prepared data.**
 
+The idea: FRS is a pre-modeling diagnostic; features with low FRS are prioritized for cleaning or excluded from the model
+
 ---
 
-## Model Fitting
+## Stage 4: Model Fitting
+  
+### Part 4a: Standard Logistic Model
 
-### Part 3a: Standard Logistic Model
+- Standard GLM fit across datasets of all stages (clean, impaired, prepared)
+    - A note on impaired data: GLM uses complete-case analysis and will drop rows with missingness
+- Includes a visual diagnostic for how far betas have drifted from the perfect world
+
+### Part 4b: XGboost Challenger Model
+
+- XGBoost is a common machine learning challenger model to the standard logistic. 
+- Non-parametric (no betas), we fit shallow trees with fixed hyperparameters across all conditions
+    - We look at "feature importance" (gain) -- how much a feature contributes to reducing prediction error
+    - For impaired data: XGBoost contains native NA handling = uses all rows
+- Includes a visual for how gain has shifted from our perfect world model
+
+
+### Part 4c: Grading into Moody's rating buckets
+
+- Mapping PDs into a 10-point bucketing system based on Moody's one-year corporate default rates
+- Visualizes for both logistic and XGBoost models: how does bucketing shift from clean --> impaired --> prepared
+
+---
+
+
+## Stage 5: Evaluation Metrics
+
+
+---
+
+## Stage 6: Monte Carlo 
