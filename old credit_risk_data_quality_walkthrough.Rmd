@@ -410,10 +410,9 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
   # PHASE 5: RETURN
   # ============================================================
   
-  # Winsorizing bounds from clean data — used by FRS diagnostics (compute_frs)
-  # to measure data quality against the clean-world reference distribution.
-  # NOT used by prepare_for_modeling(), which computes its own percentile
-  # cutoffs from the data it receives (practitioner approach).
+  # Winsorizing bounds from clean data — used by prepare_for_modeling()
+  # to cap extremes before imputation. Same discipline as scaling:
+  # the clean world defines what "extreme" means.
   winsor_bounds <- list(
     log_assets     = c(lower = as.numeric(quantile(panel$log_assets, 0.025)),
                        upper = as.numeric(quantile(panel$log_assets, 0.975))),
@@ -482,7 +481,7 @@ This creates one synthetic dataset with 5000 businesses / around 20k rows, and t
 ```{r}
 ######################################################################
 
-result <- simulate_clean_data_panel(N = 50000) # running with high sample size as this is the showcase document
+result <- simulate_clean_data_panel(N = 50000, seed=13) # running with high sample size as this is the showcase document
 # sorry in advance as this is slow
 
 ###################################################################
@@ -1360,7 +1359,7 @@ Last step before modeling:
 
 
 ```{r}
-prepare_for_modeling <- function(dat, scaling, method = "regression",
+prepare_for_modeling <- function(dat, scaling, winsor_bounds, method = "regression",
                                  model_formula = NULL, label = NULL) {
   
     # Auto-generate label from impairment metadata if not provided
@@ -1425,9 +1424,8 @@ prepare_for_modeling <- function(dat, scaling, method = "regression",
     }
   }
   
-  # Winsorizing the data — percentile cutoffs computed from the data as
-  # received, matching what a practitioner would do without oracle access.
-  dat_prepared <- winsorize_vars(dat_prepared)
+  # Winsorizing the data (capping the most extreme 5%)
+  dat_prepared <- winsorize_vars(dat_prepared, winsor_bounds)
   
   # Count NAs here for diagnostics BEFORE imputation (in _z and raw cols)
   predictor_vars_z <- paste0(imputable_vars, "_z")
@@ -1611,19 +1609,19 @@ Fixing the data: with the default method of regression (? what do you call it) i
 
 # Missingness conditions: impute NAs using the default regression technique + recompute z-scores
 
-dat_mcar_mild_prepped   <- prepare_for_modeling(dat_mcar_mild, result$scaling, method = "regression", model_formula = pd_formula)
-dat_mcar_severe_prepped <- prepare_for_modeling(dat_mcar_severe, result$scaling, method = "regression", model_formula = pd_formula)
-dat_mar_mild_prepped    <- prepare_for_modeling(dat_mar_mild, result$scaling, method = "regression", model_formula = pd_formula)
-dat_mar_severe_prepped  <- prepare_for_modeling(dat_mar_severe, result$scaling, method = "regression", model_formula = pd_formula)
-dat_mnar_mild_prepped   <- prepare_for_modeling(dat_mnar_mild, result$scaling, method = "regression", model_formula = pd_formula)
-dat_mnar_severe_prepped <- prepare_for_modeling(dat_mnar_severe, result$scaling, method = "regression", model_formula = pd_formula)
+dat_mcar_mild_prepped   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_mcar_severe_prepped <- prepare_for_modeling(dat_mcar_severe, result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_mar_mild_prepped    <- prepare_for_modeling(dat_mar_mild,    result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_mar_severe_prepped  <- prepare_for_modeling(dat_mar_severe,  result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_mnar_mild_prepped   <- prepare_for_modeling(dat_mnar_mild,   result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_mnar_severe_prepped <- prepare_for_modeling(dat_mnar_severe, result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
 
 # Noise and implausible: implaus values are turned to NAs, then imputation
 
-dat_noise_mild_prepped   <- prepare_for_modeling(dat_noise_mild, result$scaling, method = "regression", model_formula = pd_formula)
-dat_noise_severe_prepped <- prepare_for_modeling(dat_noise_severe, result$scaling, method = "regression", model_formula = pd_formula)
-dat_impl_mild_prepped    <- prepare_for_modeling(dat_impl_mild, result$scaling, method = "regression", model_formula = pd_formula)
-dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe, result$scaling, method = "regression", model_formula = pd_formula)
+dat_noise_mild_prepped   <- prepare_for_modeling(dat_noise_mild,   result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_noise_severe_prepped <- prepare_for_modeling(dat_noise_severe, result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_impl_mild_prepped    <- prepare_for_modeling(dat_impl_mild,    result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
+dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe,  result$scaling, result$winsor_bounds, method = "regression", model_formula = pd_formula)
 
 
 
@@ -1636,23 +1634,23 @@ dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe, result$scaling
 
 ```{r}
 # Missingness conditions fixed with MEDIAN imputation: impute NAs + recompute z-scores
-dat_mcar_mild_prepped_med   <- prepare_for_modeling(dat_mcar_mild, result$scaling, method = "median")
-dat_mcar_severe_prepped_med <- prepare_for_modeling(dat_mcar_severe, result$scaling,  method = "median")
-dat_mar_mild_prepped_med    <- prepare_for_modeling(dat_mar_mild, result$scaling, method = "median")
-dat_mar_severe_prepped_med  <- prepare_for_modeling(dat_mar_severe, result$scaling,  method = "median")
-dat_mnar_mild_prepped_med   <- prepare_for_modeling(dat_mnar_mild, result$scaling,  method = "median")
-dat_mnar_severe_prepped_med <- prepare_for_modeling(dat_mnar_severe, result$scaling,  method = "median")
+dat_mcar_mild_prepped_med   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, result$winsor_bounds, method = "median")
+dat_mcar_severe_prepped_med <- prepare_for_modeling(dat_mcar_severe, result$scaling, result$winsor_bounds,  method = "median")
+dat_mar_mild_prepped_med    <- prepare_for_modeling(dat_mar_mild,    result$scaling, result$winsor_bounds,  method = "median")
+dat_mar_severe_prepped_med  <- prepare_for_modeling(dat_mar_severe,  result$scaling, result$winsor_bounds,  method = "median")
+dat_mnar_mild_prepped_med   <- prepare_for_modeling(dat_mnar_mild,   result$scaling, result$winsor_bounds,  method = "median")
+dat_mnar_severe_prepped_med <- prepare_for_modeling(dat_mnar_severe, result$scaling, result$winsor_bounds,  method = "median")
 ```
 
 
 ```{r}
 # Missingness conditions fixed with MICE imputation: impute NAs + recompute z-scores
-dat_mcar_mild_prepped_mice   <- prepare_for_modeling(dat_mcar_mild, result$scaling,  method = "mice")
-dat_mcar_severe_prepped_mice <- prepare_for_modeling(dat_mcar_severe, result$scaling,  method = "mice")
-dat_mar_mild_prepped_mice    <- prepare_for_modeling(dat_mar_mild, result$scaling, method = "mice")
-dat_mar_severe_prepped_mice  <- prepare_for_modeling(dat_mar_severe, result$scaling,  method = "mice")
-dat_mnar_mild_prepped_mice   <- prepare_for_modeling(dat_mnar_mild, result$scaling,  method = "mice")
-dat_mnar_severe_prepped_mice <- prepare_for_modeling(dat_mnar_severe, result$scaling,  method = "mice")
+dat_mcar_mild_prepped_mice   <- prepare_for_modeling(dat_mcar_mild,   result$scaling, result$winsor_bounds,  method = "mice")
+dat_mcar_severe_prepped_mice <- prepare_for_modeling(dat_mcar_severe, result$scaling, result$winsor_bounds,  method = "mice")
+dat_mar_mild_prepped_mice    <- prepare_for_modeling(dat_mar_mild,    result$scaling, result$winsor_bounds,  method = "mice")
+dat_mar_severe_prepped_mice  <- prepare_for_modeling(dat_mar_severe,  result$scaling, result$winsor_bounds,  method = "mice")
+dat_mnar_mild_prepped_mice   <- prepare_for_modeling(dat_mnar_mild,   result$scaling, result$winsor_bounds,  method = "mice")
+dat_mnar_severe_prepped_mice <- prepare_for_modeling(dat_mnar_severe, result$scaling, result$winsor_bounds,  method = "mice")
 
 ```
 

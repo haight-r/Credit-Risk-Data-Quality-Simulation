@@ -13,12 +13,20 @@
 #   it is nonsense, and should be handled the same way as a missing value.
 #
 # Step 2 — winsorize_vars(): remaining extreme values are capped at
-#   empirical percentile cutoffs. Two-sided variables get clipped at
+#   empirical percentile cutoffs computed from the data as received.
+#   This is the practitioner approach: a real-world analyst computes
+#   percentiles on whatever dataset lands on their desk, without access
+#   to the "clean" distribution. Two-sided variables get clipped at
 #   the 2.5th and 97.5th percentiles; one-sided variables bounded at
 #   zero get clipped only at the 95th percentile on the upper end
 #   (the lower bound is already naturally at zero). Crefo is bounded
-#   by its index definition [100, 600] so winsorizing applies to both
-#   tails within that range.
+#   by its index definition [100, 600] so domain_to_na() handles it.
+#
+# NOTE: clean-data winsor_bounds are still stored in result$winsor_bounds
+# and used by the FRS diagnostic (compute_frs), where the purpose is to
+# measure data quality against a known reference. The distinction is:
+#   - FRS (diagnostic):   "how far is this data from the clean standard?"
+#   - Winsorizing (prep): "what would a practitioner do with this data?"
 #
 # This reflects Risk Research's standard data preparation workflow:
 # identify → nullify → cap → impute.
@@ -80,48 +88,55 @@ domain_to_na <- function(dat) {
 }
 
 
-winsorize_vars <- function(dat, winsor_bounds) {
-  # Cap extreme-but-plausible values using clean-data cutoffs.
-  # Bounds are precomputed from the unimpaired portfolio (same discipline
-  # as scaling parameters). One-sided variables have lower = 0 in the
-  # bounds; two-sided variables have empirical lower bounds.
+winsorize_vars <- function(dat) {
+  # Cap extreme-but-plausible values at empirical percentile cutoffs
+  # computed from the data as received — i.e., the practitioner approach.
+  # A real-world analyst does not have access to the clean distribution;
+  # they compute percentiles on whatever dataset lands on their desk.
+  # This mirrors the Risk Research standard workflow.
+  #
+  # Two-sided variables: clipped at the 2.5th and 97.5th percentiles.
+  # One-sided variables (bounded at zero): clipped at the 95th percentile
+  # on the upper end only (the lower bound is already naturally at zero).
+  # Crefo is not winsorized here — it has hard domain bounds [100, 600]
+  # enforced by domain_to_na().
   
   # --- log_assets (two-sided) ----------------------------------------------
-  b <- winsor_bounds$log_assets
   if (any(!is.na(dat$log_assets))) {
-    n_lo <- sum(dat$log_assets < b["lower"], na.rm = TRUE)
-    n_hi <- sum(dat$log_assets > b["upper"], na.rm = TRUE)
-    dat$log_assets <- pmin(pmax(dat$log_assets, b["lower"]), b["upper"])
+    b <- quantile(dat$log_assets, c(0.025, 0.975), na.rm = TRUE)
+    n_lo <- sum(dat$log_assets < b[1], na.rm = TRUE)
+    n_hi <- sum(dat$log_assets > b[2], na.rm = TRUE)
+    dat$log_assets <- pmin(pmax(dat$log_assets, b[1]), b[2])
     if (n_lo + n_hi > 0)
       cat(sprintf("  Winsorize log_assets: %d low (< %.2f), %d high (> %.2f)\n",
-                  n_lo, b["lower"], n_hi, b["upper"]))
+                  n_lo, b[1], n_hi, b[2]))
   }
   
   # --- debt_to_equity (one-sided upper) ------------------------------------
-  b <- winsor_bounds$debt_to_equity
   if (any(!is.na(dat$debt_to_equity))) {
-    n_hi <- sum(dat$debt_to_equity > b["upper"], na.rm = TRUE)
-    dat$debt_to_equity <- pmin(dat$debt_to_equity, b["upper"])
+    b_upper <- quantile(dat$debt_to_equity, 0.95, na.rm = TRUE)
+    n_hi <- sum(dat$debt_to_equity > b_upper, na.rm = TRUE)
+    dat$debt_to_equity <- pmin(dat$debt_to_equity, b_upper)
     if (n_hi > 0)
-      cat(sprintf("  Winsorize debt_to_equity: %d high (> %.2f)\n", n_hi, b["upper"]))
+      cat(sprintf("  Winsorize debt_to_equity: %d high (> %.2f)\n", n_hi, b_upper))
   }
   
   # --- interest_cov (one-sided upper) --------------------------------------
-  b <- winsor_bounds$interest_cov
   if (any(!is.na(dat$interest_cov))) {
-    n_hi <- sum(dat$interest_cov > b["upper"], na.rm = TRUE)
-    dat$interest_cov <- pmin(dat$interest_cov, b["upper"])
+    b_upper <- quantile(dat$interest_cov, 0.95, na.rm = TRUE)
+    n_hi <- sum(dat$interest_cov > b_upper, na.rm = TRUE)
+    dat$interest_cov <- pmin(dat$interest_cov, b_upper)
     if (n_hi > 0)
-      cat(sprintf("  Winsorize interest_cov: %d high (> %.2f)\n", n_hi, b["upper"]))
+      cat(sprintf("  Winsorize interest_cov: %d high (> %.2f)\n", n_hi, b_upper))
   }
   
   # --- firm_age (one-sided upper) ------------------------------------------
-  b <- winsor_bounds$firm_age
   if (any(!is.na(dat$firm_age))) {
-    n_hi <- sum(dat$firm_age > b["upper"], na.rm = TRUE)
-    dat$firm_age <- pmin(dat$firm_age, b["upper"])
+    b_upper <- quantile(dat$firm_age, 0.95, na.rm = TRUE)
+    n_hi <- sum(dat$firm_age > b_upper, na.rm = TRUE)
+    dat$firm_age <- pmin(dat$firm_age, b_upper)
     if (n_hi > 0)
-      cat(sprintf("  Winsorize firm_age: %d high (> %.2f)\n", n_hi, b["upper"]))
+      cat(sprintf("  Winsorize firm_age: %d high (> %.2f)\n", n_hi, b_upper))
   }
   
   
