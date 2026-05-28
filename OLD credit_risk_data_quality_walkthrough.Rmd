@@ -4,21 +4,18 @@ output:
   html_document: default
   pdf_document: default
 date: "2026-03-02" 
-editor_options: 
-  markdown: 
-    wrap: 72
 ---
 
 ```{r setup, include=FALSE, warning=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-### Part 0: Helper functions and setup
+### Part 0: Helper functions and setup 
 
 ```{r, warning=FALSE, message=FALSE}
 source("02_helperfunctions.R")
 
-required_packages <- c("ggplot2", "dplyr", "tidyr", "mice", "xgboost", "DiagrammeR")
+required_packages <- c("ggplot2", "dplyr", "tidyr", "mice", "xgboost")
 
 for (pkg in required_packages) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -29,103 +26,90 @@ for (pkg in required_packages) {
 
 ```
 
+
 # **Stage 1: Creating the "Perfect World" with the DGP**
 
 ### Overview
 
-------------------------------------------------------------------------
+---
 
 ##### **Phase 1. Generating features (predictors) for the business world**
+Have to define both the variables and their distributions / dependencies.
 
-Have to define both the variables and their distributions /
-dependencies.
 
 1: **Root variables**
 
-a)  **firm age**: right skewed so using gamma distribution
-b)  **sector**: three sectors with proportions and risk properties based
-    off real German practitioner data.
-    -   Sector 1: Services (Dienstleistungen) at 57% of the sample.
-        Least risky with 2% default rate
-    -   Sector 2: Hospitality (Gastro), 19% of the sample. Most risky,
-        3.6% default rate
-    -   Sector 3: Manufacturing (Verarbeitendes Gewerbe), 24% of the
-        sample. Medium risk, 2.3% default rate
+a) **firm age**: right skewed so using gamma distribution
+b) **sector**: three sectors with proportions and risk properties based off real German practitioner data. 
+    - Sector 1: Services (Dienstleistungen) at 57% of the sample. Least risky with 2% default rate
+    - Sector 2: Hospitality (Gastro), 19% of the sample. Most risky, 3.6% default rate
+    - Sector 3: Manufacturing (Verarbeitendes Gewerbe), 24% of the sample. Medium risk, 2.3% default rate
 
 2: **Chained regression dependencies**
 
-Each variable is determined by the one in front of it -- older firms
-tend to be larger, larger firms tend to have lower leverage Plus --
-adding randomness
+Each variable is determined by the one in front of it -- older firms tend to be larger, larger firms tend to have lower leverage
+Plus -- adding randomness
 
-c)  **log_assets**: proxy for firm size, dependent on age and sector
-d)  **debt to equity**: higher leverage is more dangerous --\> dependent
-    on how big the firm is and how old it is
-e)  **interest_cov**: proxy for cash flow
-f)  **Crefo score**. (see below) Dependent on most things above.
-    Sometimes gets lagged (not updated every year)
+c) **log_assets**: proxy for firm size, dependent on age and sector
+d) **debt to equity**: higher leverage is more dangerous --> dependent on how big the firm is and how old it is
+e) **interest_cov**: proxy for cash flow 
+f) **Crefo score**. (see below) Dependent on most things above. Sometimes gets lagged (not updated every year)
 
-------------------------------------------------------------------------
+---
 
 ##### **2. Choose the true coefficients that define the world**
 
-This is the "ground truth" -- can be confirmed from RR All are
-standardized (change in log-odds per 1 SD increase)
+This is the "ground truth" -- can be confirmed from RR
+All are standardized (change in log-odds per 1 SD increase)
 
-beta0 \<- -3.9 this is the intercept -- should be whatever the log odds
-of the default rate is beta_log_assets \<- -0.2 larger firms less likely
-to default beta_debt_to_equity \<- 0.4 higher leverage = higher risk
-beta_interest_cov \<- -0.3 higher coverage of interest expenses = lower
-risk beta_sector2 \<- 0.4 gastro is the riskiest sector beta_sector3 \<-
-0.18 manufacturing slightly riskier beta_firm_age \<- -0.1 older firms
-slightly safer beta_crefo \<- 0.3 higher Crefo score → higher default
-risk
-
-------------------------------------------------------------------------
+  beta0               <- -3.9   this is the intercept -- should be whatever the log odds of the default rate is
+  beta_log_assets     <- -0.2   larger firms less likely to default
+  beta_debt_to_equity <-  0.4   higher leverage = higher risk
+  beta_interest_cov   <- -0.3   higher coverage of interest expenses = lower risk
+  beta_sector2        <-  0.4   gastro is the riskiest sector
+  beta_sector3        <-  0.18  manufacturing slightly riskier
+  beta_firm_age       <- -0.1   older firms slightly safer
+  beta_crefo          <-  0.3   higher Crefo score → higher default risk
+  
+---
 
 ##### **3. Create panel data with time series component**
 
-Inner loop - creating firms that either stay the same over time, get
-worse, or improve... (drift rates); default or not during their 3-7 year
-loan periods. Crefo will sometimes refresh itself, sometimes remaining
-stale
+Inner loop - creating firms that either stay the same over time, get worse, or improve... (drift rates); default or not during their 3-7 year loan periods.
+Crefo will sometimes refresh itself, sometimes remaining stale
 
 Outer loop creates lots of these firms. Then the rows are bound together
 
--   the "linpred" part -- weighted sum of the predictors. this is
-    logistic regression
-    -   computes the log-odds of default for each borrower
--   pd_true: then after: the logistic transformation so we get the true
-    PDs and not log-odds
 
-Draw observed defaults. For each borrower, draw a default with pd_true
-value from before - borrowers can have same PDs but 2 different outcomes
-(default or not)
+- the "linpred" part -- weighted sum of the predictors. this is logistic regression
+    - computes the log-odds of default for each borrower
+- pd_true: then after: the logistic transformation so we get the true PDs and not log-odds
 
-------------------------------------------------------------------------
 
-##### **4. Reporting and returning a list**
+Draw observed defaults.
+For each borrower, draw a default with pd_true value from before
+- borrowers can have same PDs but 2 different outcomes (default or not)
 
--   Data has both raw and scaled versions of every variable
--   Scaling = the mean and SD of every predictor so you can apply
-    consistently to the impaired datasets
--   Also saving the bounds for winsorization and plausibility (related
-    to data preparation and FRS scores)
+---
+
+##### **4. Reporting and returning a list **
+
+- Data has both raw and scaled versions of every variable
+- Scaling = the mean and SD of every predictor so you can apply consistently to the impaired datasets
+- Also saving the bounds for winsorization and plausibility (related to data preparation and FRS scores)
 
 True betas = ground truth coefficients
 
-------------------------------------------------------------------------
+---
 
 **A quick note on Crefo score (Crefo Bonitätsindex)**
 
-Scale: 100 (excellent) to 600 (insolvent) — higher = worse
-creditworthiness. Generated as a noisy composite of the same financial
-signals the bureau uses: leverage, coverage, firm size, and sector.
-Idiosyncratic noise (sd = 25) reflects bureau information not in our DGP
-(payment history with other creditors, legal registry data, etc.).
+Scale: 100 (excellent) to 600 (insolvent) — higher = worse creditworthiness.
+Generated as a noisy composite of the same financial signals the bureau uses: leverage, coverage, firm size, and sector. Idiosyncratic noise (sd = 25)
+reflects bureau information not in our DGP (payment history with other creditors, legal registry data, etc.).
 
-Sector penalties: gastro (40) and manufacturing (20) reflect higher
-historical default rates in those sectors per practitioner datasets.
+Sector penalties: gastro (40) and manufacturing (20) reflect higher historical default rates in those sectors per practitioner datasets. 
+
 
 ```{r}
 
@@ -488,187 +472,12 @@ simulate_clean_data_panel <- function(N = 5000, seed = 21,
 
 ```
 
-#### Data Generating Process DAG
 
-*1) Simple DAG for the five indicator variables)*
-
-Color code: 
-
-- Gray `firm_age` : root variable drawn from a distribution,
-not derived from anything else 
-
-- Green `sector` : root variable like age , but continuous 
-
-- Blue `log_assets`, `debt_to_equity`,
-`interest_cov` : financial predictors derived from root vars and each
-other 
-
-- Orange `crefo`: Creditreform separate since it's a derived
-external rating that depends on all of the above (except age)
-
-```{r}
-
-# ── Simple DAG: Origination-level variable dependencies ──────────────
-
-
-grViz("
-digraph DGP_simple {
-
-  graph [rankdir = TB, fontname = 'Helvetica', bgcolor = 'transparent',
-         nodesep = 0.8, ranksep = 0.7, margin = '0.2,0.2']
-  node  [fontname = 'Helvetica', fontsize = 11, style = filled,
-         shape = box, penwidth = 0.6]
-  edge  [color = '#888888', penwidth = 0.7, arrowsize = 0.6]
-
-  # ── Root variables ─────────────────────────────────────────────
-  firm_age [label = 'firm_age',  fillcolor = '#F1EFE8', color = '#B4B2A9']
-  sector   [label = 'sector',    fillcolor = '#E1F5EE', color = '#5DCAA5']
-
-  # ── Derived variables ──────────────────────────────────────────
-  log_assets     [label = 'log_assets',     fillcolor = '#E6F1FB', color = '#85B7EB']
-  debt_to_equity [label = 'debt_to_equity', fillcolor = '#E6F1FB', color = '#85B7EB']
-  interest_cov   [label = 'interest_cov',   fillcolor = '#E6F1FB', color = '#85B7EB']
-  crefo          [label = 'crefo',          fillcolor = '#FAECE7', color = '#F0997B']
-
-  # ── Edges ──────────────────────────────────────────────────────
-  firm_age -> log_assets
-  sector   -> log_assets
-  firm_age -> debt_to_equity
-  log_assets -> debt_to_equity
-  debt_to_equity -> interest_cov
-  log_assets -> interest_cov
-  log_assets -> crefo
-  debt_to_equity -> crefo
-  interest_cov -> crefo
-  sector -> crefo
-
-  # ── Layout ─────────────────────────────────────────────────────
-  {rank = same; firm_age; sector}
-  {rank = same; log_assets; debt_to_equity; interest_cov}
-}
-")
-
-
-
-```
-
-*2) Entire DGP*
-
-Phase one: (left) variable and dependency declaration 
-
-Phase two: (right) panel drift
-
-Phase three: linear predictor combining both of the above phases 
-
-```{r}
-# ── DAG of the Data Generating Process ───────────────────────────────
-
-
-grViz("
-digraph DGP {
-
-  # ── Global settings ──────────────────────────────────────────────
-  graph [rankdir = TB, fontname = 'Helvetica', bgcolor = 'transparent',
-         nodesep = 0.6, ranksep = 0.7, margin = '0.2,0.2']
-  node  [fontname = 'Helvetica', fontsize = 11, style = filled,
-         shape = box, penwidth = 0.6]
-  edge  [color = '#888888', penwidth = 0.7, arrowsize = 0.6]
-
-  # ── Phase 1: Root variables (drawn once per firm) ────────────────
-  subgraph cluster_exog {
-    label = 'Root variables (drawn once per firm)'
-    fontsize = 10; fontcolor = '#777777'
-    style = dashed; color = '#CCCCCC'
-
-    firm_age   [label = 'firm_age',   fillcolor = '#F1EFE8', color = '#B4B2A9']
-    sector     [label = 'sector',     fillcolor = '#E1F5EE', color = '#5DCAA5']
-    trajectory [label = 'trajectory', fillcolor = '#EEEDFE', color = '#AFA9EC']
-  }
-
-  # ── Phase 1: Derived at origination ─────────────────────────────
-  subgraph cluster_orig {
-    label = 'Derived at origination'
-    fontsize = 10; fontcolor = '#777777'
-    style = dashed; color = '#CCCCCC'
-
-    log_assets     [label = 'log_assets',     fillcolor = '#E6F1FB', color = '#85B7EB']
-    debt_to_equity [label = 'debt_to_equity', fillcolor = '#E6F1FB', color = '#85B7EB']
-    interest_cov   [label = 'interest_cov',   fillcolor = '#E6F1FB', color = '#85B7EB']
-    crefo          [label = 'crefo',          fillcolor = '#FAECE7', color = '#F0997B']
-  }
-
-  # ── Phase 2: Panel drift (t > 1) ───────────────────────────────
-  subgraph cluster_drift {
-    label = 'Panel drift (t > 1): state-dependent random walk'
-    fontsize = 10; fontcolor = '#777777'
-    style = dashed; color = '#CCCCCC'
-
-    pd_curr      [label = 'pd_curr\\n(drift weight)',
-                  fillcolor = '#F1EFE8', color = '#B4B2A9', shape = ellipse]
-    annual_update [label = 'Annual updates\\nlog_assets, d/e, int_cov',
-                  fillcolor = '#E6F1FB', color = '#85B7EB']
-    crefo_refresh [label = 'crefo refresh\\n(p = 0.5)',
-                  fillcolor = '#FAECE7', color = '#F0997B']
-  }
-
-  # ── Phase 3: Linear predictor → default ────────────────────────
-  subgraph cluster_outcome {
-    label = 'Outcome'
-    fontsize = 10; fontcolor = '#777777'
-    style = dashed; color = '#CCCCCC'
-
-    gastro_trend [label = 'gastro_trend\\nsector_2 × (year − 2015)',
-                 fillcolor = '#E1F5EE', color = '#5DCAA5']
-    linpred      [label = 'linpred\\nall _z predictors + sector dummies',
-                 fillcolor = '#FAEEDA', color = '#FAC775']
-    default      [label = 'default\\nBernoulli(pd_true)',
-                 fillcolor = '#FCEBEB', color = '#F09595']
-  }
-
-  # ── Phase 1 edges: origination dependencies ────────────────────
-  firm_age -> log_assets
-  sector   -> log_assets     [label = '  ±0.3', fontsize = 9, fontcolor = '#999999']
-  firm_age -> debt_to_equity [style = dashed, label = '  −0.02·z', fontsize = 9, fontcolor = '#999999']
-  log_assets -> debt_to_equity [label = '  −0.1·z', fontsize = 9, fontcolor = '#999999']
-  debt_to_equity -> interest_cov [label = '  −0.4·z', fontsize = 9, fontcolor = '#999999']
-  log_assets -> interest_cov [label = '  +0.3·z', fontsize = 9, fontcolor = '#999999']
-
-  # Crefo at origination: depends on all financials + sector
-  log_assets -> crefo
-  debt_to_equity -> crefo
-  interest_cov -> crefo
-  sector -> crefo
-
-  # ── Phase 2 edges: drift mechanism ─────────────────────────────
-  trajectory -> annual_update [label = '  drift direction', fontsize = 9, fontcolor = '#7F77DD']
-  pd_curr -> annual_update    [label = '  drift intensity\\n  (deteriorating only)', fontsize = 9, fontcolor = '#999999']
-  annual_update -> crefo_refresh
-
-  # ── Phase 3 edges: linpred ─────────────────────────────────────
-  annual_update -> linpred
-  crefo -> linpred
-  crefo_refresh -> linpred [style = dashed]
-  sector -> linpred
-  firm_age -> linpred       [label = '  ages +1/yr', fontsize = 9, fontcolor = '#999999']
-  gastro_trend -> linpred
-  sector -> gastro_trend
-
-  linpred -> default
-
-  # ── Layout hints ───────────────────────────────────────────────
-  {rank = same; firm_age; sector; trajectory}
-  {rank = same; log_assets; debt_to_equity; interest_cov}
-  {rank = same; pd_curr; annual_update}
-  {rank = same; gastro_trend; linpred}
-}
-")
-
-```
 
 ## Simulation
 
-This creates one synthetic dataset with 5000 businesses / around 20k
-rows, and tests the default rate -- should be around 2.4%.
+This creates one synthetic dataset with 5000 businesses / around 20k rows, and tests the default rate -- should be around 2.4%.
+
 
 ```{r}
 ######################################################################
@@ -689,12 +498,10 @@ pd_formula <- default ~ log_assets_z + debt_to_equity_z + interest_cov_z +
 
 ```
 
+
 ## Checkpoint: Model fit - perfect world
 
-Fitting a logistic regression: this is the baseline model and should
-recover the betas very well. If anything, a little worse than purely
-cross-sectional data -- observations aren't independent and we add
-heterogeneity with the firm trajectories
+Fitting a logistic regression: this is the baseline model and should recover the betas very well. If anything, a little worse than purely cross-sectional data -- observations aren't independent and we add heterogeneity with the firm trajectories
 
 ```{r}
 ## Model fit
@@ -716,20 +523,15 @@ print(round(recovery, 4))
 
 ```
 
+
+
+
 ## Feature reliability score on clean data
 
-**Feature Reliability Score (FRS)** testing from Igl & Gruber's Handbuch
-Datenqualität (2025). A customizable data quality measure per indicator
-variable -- in our case, looking at 1) Completeness, 2) Plausibility, 3)
-Outlier Score, and 4) Cross-Field Consistency for our four continuous
-predictors. FRS takes the geometric mean for the listed components.
+**Feature Reliability Score (FRS)** testing from Igl & Gruber's Handbuch Datenqualität (2025). A customizable data quality measure per indicator variable -- in our case, looking at 1) Completeness, 2) Plausibility, 3) Outlier Score, and 4) Cross-Field Consistency for our four continuous predictors. FRS takes the geometric mean for the listed components.
 
-Because this is on clean data, we should expect the scores to be near 1
-(perfect quality). We get marked down slightly in Plausibility and
-Outliers because the FRS function is always looking to winsorize the
-tails (it does not take into account that we are in the perfect world).
-Crefo does not get winsorized and is by default bounded at [100, 600] so
-it receives the only "perfect score".
+
+Because this is on clean data, we should expect the scores to be near 1 (perfect quality). We get marked down slightly in Plausibility and Outliers because the FRS function is always looking to winsorize the tails (it does not take into account that we are in the perfect world). Crefo does not get winsorized and is by default bounded at [100, 600] so it receives the only "perfect score".
 
 ```{r}
 source("03_compute_frs.R")
@@ -741,28 +543,23 @@ print_frs(frs_clean)
 
 ```
 
-------------------------------------------------------------------------
+---
 
 # **Stage 2: Data Impairment**
-
 ### MISSINGNESS
 
 #### **Impairment 1: MCAR**
 
 MCAR: missingness applied independently to each cell at random.
 
-Every cell has the same probability of being missing regardless of any
-other value in the dataset — no row-level or variable-level dependence.
-This is implemented via independent rbinom draws per variable, producing
-a random scatter of missingness across the data
+Every cell has the same probability of being missing regardless of any other value in the dataset — no row-level or variable-level dependence. This is implemented via independent rbinom draws per variable, producing a random scatter of missingness across the data
 
-Variables included: financial ratios and firm_age. Sector and Crefo are
-excluded: sector is a simple categorical entry unlikely to be missing;
-Crefo missingness is modelled separately under the MAR condition.
+Variables included: financial ratios and firm_age. Sector and Crefo are excluded: sector is a simple categorical entry unlikely to be missing; Crefo missingness is modelled separately under the MAR condition.
 
-Mild: \~8% missing per cell, Severe: \~28% missing per cell
+Mild: ~8% missing per cell, Severe: ~28% missing per cell
 
-------------------------------------------------------------------------
+---
+
 
 ```{r}
 impair_mcar <- function(dat, severity = "mild") {
@@ -801,7 +598,6 @@ impair_mcar <- function(dat, severity = "mild") {
 ```
 
 Running the MCAR function to create "mild" and "severe" impaired data:
-
 ```{r}
 
 cat("Mild MCAR impairment:\n")
@@ -812,21 +608,17 @@ dat_mcar_severe <- impair_mcar(dat, severity = "severe")
 
 ```
 
+
 #### **Impairment 2: MAR**
+
 
 MAR: missingness in crefo depends on firm_age (fully observed)
 
-Mechanism: younger firms are less likely to have a Creditreform score
-because they lack sufficient credit history for the bureau to have
-issued a rating.
+Mechanism: younger firms are less likely to have a Creditreform score because they lack sufficient credit history for the bureau to have issued a rating. 
 
-This is MAR because the missingness predictor (firm_age) is often
-observed and is a different variable from the one with missing data
-(crefo) — consistent with Little & Rubin (2002) and Zhang (2023, p.
-116). The logistic regression method is used for realistic gradual
-probability change (Zhang, 2023, p. 116). Domain justification:
-confirmed with company supervisors — new market entrants frequently lack
-Creditreform coverage in German B2B lending.
+This is MAR because the missingness predictor (firm_age) is often observed and is a different variable from the one with missing data (crefo) — consistent with Little & Rubin (2002) and Zhang (2023, p. 116). The logistic regression method is used for realistic gradual probability change (Zhang, 2023, p. 116). Domain justification: confirmed with company supervisors — new market entrants frequently lack Creditreform coverage in German B2B lending.
+
+
 
 ```{r}
 
@@ -872,7 +664,6 @@ impair_mar <- function(dat, severity = "mild") {
 ```
 
 Creating the impaired datasets:
-
 ```{r}
 
 cat("Mild MAR impairment for Crefo:\n")
@@ -887,31 +678,20 @@ dat_mar_severe <- impair_mar(dat, severity = "severe")
 
 MNAR: missingness in interest_cov depends on interest_cov itself.
 
-Mechanism: firms with poor interest coverage strategically omit
-reporting. This is MNAR because missingness depends on the unobserved
-value of the variable itself (Little & Rubin, 2002; Zhang, 2023, p.
-117).
+Mechanism: firms with poor interest coverage strategically omit reporting. This is MNAR because missingness depends on the unobserved value of the variable itself (Little & Rubin, 2002; Zhang, 2023, p. 117).
 
-Only allowing interest coverage to become impaired for a cleaner causal
-story that is easier to validate (if we see coefficient distortion, we
-know WHICH missing variable caused it, versus having multiple missing
-vars x their interactions).
+Only allowing interest coverage to become impaired for a cleaner causal story that is easier to validate (if we see coefficient distortion, we know WHICH missing variable caused it, versus having multiple missing vars x their interactions).
 
-In real life: plausibly the most likely to be affected by MNAR because
-it requires current earnings data that troubled firms are more likely to
-delay or withhold.
+In real life: plausibly the most likely to be affected by MNAR because it requires current earnings data that troubled firms are more likely to delay or withhold. 
 
-Persistence: once a firm's interest_cov goes missing in a given year, it
-remains missing for all subsequent years of that firm's life. This
-reflects real reporting behavior — a firm that stops disclosing bad
-financials does not voluntarily resume disclosure.
+Persistence: once a firm's interest_cov goes missing in a given year, it remains missing for all subsequent years of that firm's life. This reflects real reporting behavior — a firm that stops disclosing bad financials does not voluntarily resume disclosure.
 
-Intercepts tuned to achieve overall missing rates comparable to MCAR/MAR
-after persistence propagation: Mild: \~8% of firm-years, Severe: \~28%
-of firm-years
+Intercepts tuned to achieve overall missing rates comparable to
+MCAR/MAR after persistence propagation:
+Mild: ~8% of firm-years, Severe: ~28% of firm-years
 
-Note: because persistence amplifies the initial trigger rate, the
-per-year trigger probability is set lower than the target.
+Note: because persistence amplifies the initial trigger rate, the per-year trigger probability is set lower than the target.
+
 
 ```{r}
 
@@ -983,7 +763,6 @@ impair_mnar <- function(dat, severity = "mild") {
 ```
 
 Creating the impaired datasets:
-
 ```{r}
 cat("Mild MNAR impairment on Interest Coverage:\n")
 dat_mnar_mild   <- impair_mnar(dat, severity = "mild")
@@ -993,15 +772,18 @@ dat_mnar_severe <- impair_mnar(dat, severity = "severe")
 
 ```
 
+
+
+
 #### **Impairment 4: Measurement Noise**
 
-Measurement noise: Gaussian noise added to continuous financial
-predictors, creating a less-precise dataset.
+Measurement noise: Gaussian noise added to continuous financial predictors, creating a less-precise dataset.
 
 Only continuous predictors are corrupted (except firm_age).
 
-Severity defined as % of each variable's clean SD Mild: SD_noise =
-+/-30% of clean SD, Severe: SD_noise = +/-100% of clean SD
+Severity defined as % of each variable's clean SD
+Mild: SD_noise = +/-30% of clean SD, Severe: SD_noise = +/-100% of clean SD
+
 
 ```{r}
 
@@ -1053,6 +835,7 @@ impair_noise <- function(dat, scaling, severity = "mild") {
 
 ```
 
+
 Creating the impaired datasets:
 
 ```{r}
@@ -1062,24 +845,23 @@ cat("\nSevere noise impairment:\n")
 dat_noise_severe <- impair_noise(dat, result$scaling, severity = "severe")
 ```
 
+
 #### **Impairment 5: Implausible Values**
 
-Implausible values: inject a mix of domain-invalid, extreme outlier, and
-subtly wrong values into financial predictors.
 
-Unlike the missingness impairments, implausible values are designed to
-be heterogeneous — mixing obvious violations with harder-to-detect
-distortions. This reflects real-world data quality issues: decimal
-shifts, unit confusion, stale data, and system migration artefacts do
-not produce uniform error patterns.
+Implausible values: inject a mix of domain-invalid, extreme outlier, and subtly wrong values into financial predictors.
 
-Three error types per variable: 1. Domain-invalid: clearly impossible
-values (negative age, etc.) 2. Extreme outlier: technically possible but
-far outside normal range 3. Subtle: within plausible range but wrong
-(decimal shifts, swaps [numerator / denominator, or age in months not
-years])
+Unlike the missingness impairments, implausible values are designed to be heterogeneous — mixing obvious violations with harder-to-detect distortions. This reflects real-world data quality issues: decimal shifts, unit confusion, stale data, and system migration artefacts do not produce uniform error patterns.
 
+
+Three error types per variable:
+  1. Domain-invalid: clearly impossible values (negative age, etc.)
+  2. Extreme outlier: technically possible but far outside normal range
+  3. Subtle: within plausible range but wrong (decimal shifts, swaps [numerator / denominator, or age in months not years])
+  
+  
 Severity controls the total % of rows corrupted per variable.
+
 
 ```{r}
 
@@ -1181,8 +963,8 @@ impair_implausible <- function(dat, scaling, severity = "mild") {
 
 ```
 
-Creating the impaired datasets:
 
+Creating the impaired datasets:
 ```{r}
 cat("Mild implausible impairment:\n")
 dat_impl_mild   <- impair_implausible(dat, result$scaling, severity = "mild")
@@ -1192,9 +974,10 @@ dat_impl_severe <- impair_implausible(dat, result$scaling, severity = "severe")
 
 ```
 
-------------------------------------------------------------------------
+---
 
 ### Function Checks Before Impairment / Modeling
+
 
 ```{r}
 
@@ -1228,6 +1011,10 @@ cat("Over-time default rate increases for Gastro per year (note low base on the 
 
 
 ```
+
+
+
+
 
 ```{r}
 # ── All Impairment Functions ────────────────────────────────
@@ -1268,6 +1055,7 @@ cat("Severe:\n")
 print(round(tapply(is.na(dat_mnar_severe$interest_cov), ic_bins, mean), 3))
 
 ```
+
 
 ```{r}
 # ── 3. Noise inflated SD ──────────────────────────────────────────────────
@@ -1310,6 +1098,7 @@ cat("  Negative firm_age       — mild:", round(mean(dat_impl_mild$firm_age    
 
 ```
 
+
 ```{r}
 # ── 5a. Visual distributions: Noise ───────────────────────────────────────
 
@@ -1338,6 +1127,7 @@ mtext("Implausible Values Impairment: Distribution by Severity",
       outer = TRUE, cex = 1.1, font = 2, line = 1)
 ```
 
+
 ```{r}
 # ── 6. Metadata tags ──────────────────────────────────────────────────────
 
@@ -1350,6 +1140,7 @@ for (nm in c("dat_mcar_mild", "dat_mcar_severe",
       "| severity:", attr(get(nm), "impairment")$severity, "\n")
 }
 ```
+
 
 ```{r}
 # ── 7. Crefo Score: Missing Rates (MAR) ───────────────────────────
@@ -1376,6 +1167,9 @@ print(round(tapply(is.na(dat_mar_severe$crefo), age_bins, mean), 3))
 
 
 ```
+
+
+
 
 ```{r}
 # ── 8. Crefo Score: Distribution by Sector ────────────────────────────────
@@ -1404,6 +1198,7 @@ for (s in 1:3) {
 }
 ```
 
+
 ```{r}
 # ── 10. Crefo Missing Rate by Sector ───────────────────────────────────────
 
@@ -1419,12 +1214,11 @@ for (nm in c("dat_mar_mild", "dat_mar_severe")) {
 
 ```
 
-------------------------------------------------------------------------
+---
 
 ### Feature reliability score on impaired data
 
-Here we want to look at both the overall FRS score (aggregate, geometric
-mean) along with individual FRS components for mild and severe data.
+Here we want to look at both the overall FRS score (aggregate, geometric mean) along with individual FRS components for mild and severe data.
 
 ```{r}
 
@@ -1453,9 +1247,14 @@ frs_summary <- summarize_frs(frs_all)
 
 **FRS Summary Tables**
 
-Score Bewertung \>95 %: sehr hohe Datenqualität 90–95 %: gute
-Datenqualität 80–90 %: mittlere Datenqualität \<80 %: kritische
-Datenqualität
+
+Score
+Bewertung
+>95 %: sehr hohe Datenqualität
+90–95 %: gute Datenqualität
+80–90 %: mittlere Datenqualität
+<80 %: kritische Datenqualität
+
 
 ```{r}
 # Quick look by impairment
@@ -1464,6 +1263,7 @@ frs_summary$by_condition
 # And by variable (more as Igl & Gruber intended)
 frs_summary$by_variable
 ```
+
 
 **FRS visualization**
 
@@ -1485,11 +1285,13 @@ ggplot(frs_summary$by_variable[frs_summary$by_variable$type != "none", ],
 
 ```
 
-------------------------------------------------------------------------
+
+---
 
 Last step before modeling:
 
 ## **Stage 3: Data Preparation**
+
 
 ```{r}
 prepare_for_modeling <- function(dat, scaling, method = "regression",
@@ -1735,9 +1537,8 @@ prepare_for_modeling <- function(dat, scaling, method = "regression",
 
 ```
 
-Fixing the data: with the default method of regression (? what do you
-call it) imputation
 
+Fixing the data: with the default method of regression (? what do you call it) imputation
 ```{r}
 
 # ── Prepare all impaired datasets for modeling ─────────────────────────────
@@ -1762,7 +1563,10 @@ dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe, result$scaling
 
 ```
 
+
+
 **Sidequest 1: what happens if we use median or mice?**
+
 
 ```{r}
 # Missingness conditions fixed with MEDIAN imputation: impute NAs + recompute z-scores
@@ -1773,6 +1577,7 @@ dat_mar_severe_prepped_med  <- prepare_for_modeling(dat_mar_severe, result$scali
 dat_mnar_mild_prepped_med   <- prepare_for_modeling(dat_mnar_mild, result$scaling,  method = "median")
 dat_mnar_severe_prepped_med <- prepare_for_modeling(dat_mnar_severe, result$scaling,  method = "median")
 ```
+
 
 ```{r}
 # Missingness conditions fixed with MICE imputation: impute NAs + recompute z-scores
@@ -1785,8 +1590,8 @@ dat_mnar_severe_prepped_mice <- prepare_for_modeling(dat_mnar_severe, result$sca
 
 ```
 
-Last thing before modeling: Comparing FRS across imputation methods for
-missingness
+Last thing before modeling: 
+Comparing FRS across imputation methods for missingness
 
 ```{r}
 
@@ -1892,6 +1697,8 @@ ggplot(frs_comp_summary[frs_comp_summary$severity == "severe", ],
 
 ```
 
+
+
 # **Stage 4: Modeling**
 
 ## 4a Logistic Regression
@@ -1904,10 +1711,10 @@ regulatory credit risk (EBA GL 2017/16). RR uses `glm()` with
 
 The function below fits the same formula across three stages:
 
-1.  **Clean** -- the baseline, best-case coefficient recovery
-2.  **Impaired** -- damage applied, no preparation. How bad does it get?
-3.  **Prepared** -- after winsorizing, imputation, and rescaling. Did
-    preparation recover anything?
+1. **Clean** -- the baseline, best-case coefficient recovery
+2. **Impaired** -- damage applied, no preparation. How bad does it get?
+3. **Prepared** -- after winsorizing, imputation, and rescaling. Did
+   preparation recover anything?
 
 For the missingness conditions (MCAR, MAR, MNAR), the raw impaired
 datasets contain NAs. `glm()` handles this via complete-case analysis --
@@ -1920,15 +1727,14 @@ full distorted data with no cleanup.
 
 Each fit stores:
 
--   **The fitted model object** (for later prediction, diagnostics,
-    etc.)
--   **Estimated coefficients** alongside the true betas, with absolute
-    differences -- this is the coefficient recovery check
--   **Number of observations used** -- important for interpreting the
-    complete-case fits where glm drops NA rows
--   **Convergence flag** -- glm can occasionally fail to converge on
-    heavily impaired data; we want to know when that happens rather than
-    silently carrying a bad fit forward
+- **The fitted model object** (for later prediction, diagnostics, etc.)
+- **Estimated coefficients** alongside the true betas, with absolute
+  differences -- this is the coefficient recovery check
+- **Number of observations used** -- important for interpreting the
+  complete-case fits where glm drops NA rows
+- **Convergence flag** -- glm can occasionally fail to converge on
+  heavily impaired data; we want to know when that happens rather than
+  silently carrying a bad fit forward
 
 ```{r}
 
@@ -2032,6 +1838,7 @@ print(glm_results$coef_recovery)
 
 ```
 
+
 ### Coefficient recovery: how far did the betas drift?
 
 A first visual diagnostic: for each impairment condition, how close are
@@ -2083,6 +1890,8 @@ ggplot(glm_results$coef_recovery,
 
 ```
 
+
+
 ## 4b XGBoost
 
 ### Overview
@@ -2094,26 +1903,26 @@ or less robust to data quality impairment.
 
 Key structural differences from glm that matter here:
 
--   **No formula interface.** XGBoost needs a numeric matrix
-    (`xgb.DMatrix`) and a separate label vector. We extract the same
-    predictor columns used in `pd_formula` and convert manually.
--   **Native NA handling.** XGBoost learns optimal split directions for
-    missing values during training. This means the raw impaired fits
-    (stage = "impaired") use *all* rows, including those with NAs --
-    unlike glm, which drops them via complete-case analysis. This is a
-    structurally different response to the same damage and part of the
-    model comparison story
--   **No coefficients.** XGBoost produces feature importance
-    (gain-based) rather than interpretable betas. We store importance
-    tables instead of coefficient recovery, and the real model
-    comparison happens downstream at the evaluation stage (predicted
-    PDs, discrimination, calibration, grading).
--   **Fixed hyperparameters.** Since the research question is about data
-    quality, not model tuning, we fix hyperparameters across all
-    conditions. Any performance difference is then attributable to the
-    data, not to tuning. The defaults below are conservative and
-    standard for binary credit risk: shallow trees, moderate learning
-    rate, early stopping to avoid overfitting.(!! check with Sophie)
+- **No formula interface.** XGBoost needs a numeric matrix (`xgb.DMatrix`)
+  and a separate label vector. We extract the same predictor columns used
+  in `pd_formula` and convert manually.
+- **Native NA handling.** XGBoost learns optimal split directions for
+  missing values during training. This means the raw impaired fits
+  (stage = "impaired") use *all* rows, including those with NAs --
+  unlike glm, which drops them via complete-case analysis. This is a
+  structurally different response to the same damage and part of the
+  model comparison story
+- **No coefficients.** XGBoost produces feature importance (gain-based)
+  rather than interpretable betas. We store importance tables instead of
+  coefficient recovery, and the real model comparison happens downstream
+  at the evaluation stage (predicted PDs, discrimination, calibration,
+  grading).
+- **Fixed hyperparameters.** Since the research question is about data
+  quality, not model tuning, we fix hyperparameters across all conditions.
+  Any performance difference is then attributable to the data, not to
+  tuning. The defaults below are conservative and standard for binary
+  credit risk: shallow trees, moderate learning rate, early stopping to
+  avoid overfitting.(!! check with Sophie)
 
 ```{r, warning=FALSE, message=FALSE}
 
@@ -2243,6 +2052,7 @@ print(xgb_results$importance)
 
 ```
 
+
 ### Feature importance: does impairment reshuffle what the model relies on?
 
 In the clean-data fit, XGBoost should allocate gain roughly in line with
@@ -2289,13 +2099,14 @@ ggplot(xgb_results$importance,
 
 ```
 
+
 ## 4c PD Grading
 
 ### Overview
 
 After fitting models, the next step in a real-world PD framework is to
-assign each firm to a risk grade. This maps continuous predicted PDs
-onto a discrete rating scale, analogous to how Moody's maps default
+assign each firm to a risk grade. This maps continuous predicted PDs onto
+a discrete rating scale, analogous to how Moody's maps default
 probabilities to letter grades (Aaa through C).
 
 We use a 10-grade scale (1 = safest, 10 = riskiest) with PD boundaries
@@ -2303,31 +2114,32 @@ derived from Moody's one-year idealized corporate default rates. The
 mapping is:
 
 | Grade | Moody's Equivalent | PD Upper Bound |
-|-------|--------------------|----------------|
-| 1     | Aaa                | 0.001%         |
-| 2     | Aa                 | 0.06%          |
-| 3     | A                  | 0.11%          |
-| 4     | Baa                | 0.30%          |
-| 5     | Ba (upper)         | 0.70%          |
-| 6     | Ba (lower)         | 1.50%          |
-| 7     | B (upper)          | 3.00%          |
-| 8     | B (lower)          | 8.00%          |
-| 9     | Caa                | 15.00%         |
-| 10    | Ca-C / Default     | 100.00%        |
+|-------|-------------------|----------------|
+| 1     | Aaa               | 0.001%         |
+| 2     | Aa                | 0.06%          |
+| 3     | A                 | 0.11%          |
+| 4     | Baa               | 0.30%          |
+| 5     | Ba (upper)        | 0.70%          |
+| 6     | Ba (lower)        | 1.50%          |
+| 7     | B (upper)         | 3.00%          |
+| 8     | B (lower)         | 8.00%          |
+| 9     | Caa               | 15.00%         |
+| 10    | Ca-C / Default    | 100.00%        |
 
-Given the DGP's \~2% average default rate, most firms should cluster in
+Given the DGP's ~2% average default rate, most firms should cluster in
 grades 5-8, with relatively few in the tails. This is realistic for a
 B2B/SME portfolio.
 
 The critical design choice: **bucket boundaries are fixed and model-
 independent.** The same PD thresholds are applied to all conditions, all
-stages, and both model types. This means a "grade 6" carries the same PD
-interpretation everywhere, and any shift in grade distributions across
-conditions is attributable to the model + data, not to a moving scale.
+stages, and both model types. This means a "grade 6" carries the same
+PD interpretation everywhere, and any shift in grade distributions
+across conditions is attributable to the model + data, not to a moving
+scale.
 
 This also enables **grade migration analysis**: comparing which grade
 each firm receives under clean vs. impaired vs. prepared conditions. A
-firm graded 5 on clean data but 7 on impaired data has been
+firm graded 5 on clean data but 7 on impaired data has been 
 misclassified by the damage -- and whether preparation pulls it back
 toward 5 is the key question.
 
@@ -2402,6 +2214,8 @@ assign_pd_grades <- function(models,
 
 ```
 
+
+
 Running it for both models -- note that we need to pass matched lists of
 models and datasets so that each model scores its own training data:
 
@@ -2437,13 +2251,14 @@ xgb_grades <- assign_pd_grades(
 
 ```
 
+
 ### Grade distributions: how does impairment shift the rating landscape?
 
-The grade distribution under clean data is the "true" portfolio profile.
-Impairment should distort this -- damaged data may push firms into the
-wrong grade, either overstating risk (conservative bias) or understating
-it (dangerous). The question at each panel is: does preparation restore
-the clean-data distribution?
+The grade distribution under clean data is the "true" portfolio
+profile. Impairment should distort this -- damaged data may push firms
+into the wrong grade, either overstating risk (conservative bias) or
+understating it (dangerous). The question at each panel is: does
+preparation restore the clean-data distribution?
 
 ```{r, fig.width=12, fig.height=8}
 
@@ -2553,507 +2368,17 @@ ggplot(xgb_grade_dist,
 
 ```
 
-#### if we know exactly who defaulted vs. not via the DGP, can we add another bar for perfect world...?
+# # if we know exactly who defaulted vs. not via the DGP, can we add another bar for perfect world...?
 
 # **Stage 5: Evaluation Metrics**
 
-## Overview
 
-The evaluation stage asks: how much does each impairment condition
-degrade model performance, and does preparation recover it? Following
-the RR model validation framework, we measure two of the three pillars:
-**discrimination** (can the model rank-order firms by risk?) and
-**calibration** (do predicted PDs match observed default frequencies?).
 
-The third pillar -- **stability** (temporal drift, population stability)
--- is outside scope. Our simulation generates a single cross-section per
-iteration; there is no time-separated holdout against which to measure
-drift. Stability testing requires a genuine temporal gap between
-development and validation samples, which the MC design does not
-produce.
 
-**Evaluation design.** Every model -- clean-trained, impaired-trained,
-prepared-trained -- predicts on the **same clean dataset**. This is the
-critical design choice: the clean data is the true risk surface (known
-from the DGP), and scoring every model against it isolates the effect of
-training-data damage on model performance. The clean-trained model's
-metrics are the best-case ceiling; degradation from that ceiling is what
-we report.
 
-Because the research question concerns relative degradation rather than
-out-of-sample prediction, all models are evaluated on the full clean
-dataset. The clean-trained model's in-sample metrics serve as the upper
-bound. The Monte Carlo layer (Stage 6) provides the replication and
-sampling variability that a train/test split would otherwise supply.
 
-**Metrics computed:**
 
--   **AUC** (Area Under the ROC Curve): probability that a randomly
-    chosen defaulter receives a higher predicted PD than a randomly
-    chosen non-defaulter. Computed via the Mann-Whitney U statistic --
-    no external package needed.
--   **Gini coefficient**: `2 × AUC - 1`. Linearly equivalent to AUC but
-    the standard reporting metric in regulatory credit risk (EBA GL
-    2017/16 uses AR/Gini for discriminatory power assessment).
--   **KS statistic** (Kolmogorov-Smirnov): maximum vertical distance
-    between the CDF of predicted PDs for defaulters vs. non-defaulters.
-    Captures separation at the single point of maximum divergence, which
-    AUC (averaging over the whole curve) can miss.
--   **Brier score**: `mean((predicted - actual)²)`. A proper scoring
-    rule that jointly captures discrimination and calibration. Lower is
-    better.
--   **O/E ratio** (Observed / Expected): observed default rate divided
-    by mean predicted PD. A value of 1.0 indicates perfect aggregate
-    calibration; below 1.0 means the model overpredicts default risk;
-    above 1.0 means underprediction. This is the simplest regulatory
-    calibration check.
-
-```{r}
-
-# ── Evaluate models: discrimination + calibration metrics ──────────────
-
-evaluate_models <- function(models,
-                            eval_data,
-                            formula,
-                            model_type = c("glm", "xgboost")) {
-
-  model_type <- match.arg(model_type)
-  response   <- all.vars(formula)[1]
-  predictors <- all.vars(formula)[-1]
-
-  actual <- eval_data[[response]]
-
-  # ── Helper: AUC via Mann-Whitney U ──────────────────────────────────
-  # P(score_defaulter > score_non_defaulter), with 0.5 for ties.
-  # Equivalent to pROC::auc() but avoids the dependency.
-  compute_auc <- function(pred, actual) {
-    scores_1 <- pred[actual == 1]
-    scores_0 <- pred[actual == 0]
-    n1 <- length(scores_1)
-    n0 <- length(scores_0)
-    if (n1 == 0 || n0 == 0) return(NA_real_)
-    U <- sum(vapply(scores_1, function(s) {
-      sum(s > scores_0) + 0.5 * sum(s == scores_0)
-    }, numeric(1)))
-    U / (n1 * n0)
-  }
-
-  # ── Helper: KS statistic ────────────────────────────────────────────
-  # Max |F1(t) - F0(t)| where F1 = CDF of defaulter scores,
-  # F0 = CDF of non-defaulter scores.
-  compute_ks <- function(pred, actual) {
-    scores_1 <- pred[actual == 1]
-    scores_0 <- pred[actual == 0]
-    if (length(scores_1) == 0 || length(scores_0) == 0) return(NA_real_)
-    cdf_1 <- ecdf(scores_1)
-    cdf_0 <- ecdf(scores_0)
-    all_scores <- sort(unique(pred))
-    max(abs(cdf_1(all_scores) - cdf_0(all_scores)))
-  }
-
-  # ── Loop over all fitted models ─────────────────────────────────────
-  results <- vector("list", length(models))
-  names(results) <- names(models)
-
-  for (key in names(models)) {
-
-    mod <- models[[key]]
-
-    # Predict on the SHARED clean evaluation data
-    if (model_type == "glm") {
-      pd_pred <- predict(mod, newdata = eval_data, type = "response")
-    } else {
-      X <- as.matrix(eval_data[, predictors, drop = FALSE])
-      pd_pred <- predict(mod, xgb.DMatrix(data = X))
-    }
-
-    # Discrimination
-    auc_val  <- compute_auc(pd_pred, actual)
-    gini_val <- 2 * auc_val - 1
-    ks_val   <- compute_ks(pd_pred, actual)
-
-    # Calibration
-    brier_val <- mean((pd_pred - actual)^2)
-    obs_rate  <- mean(actual)
-    exp_rate  <- mean(pd_pred)
-    oe_ratio  <- obs_rate / exp_rate
-
-    # Parse key into stage + condition
-    stage <- ifelse(key == "clean", "clean",
-                    ifelse(grepl("^imp_", key), "impaired", "prepared"))
-    condition <- ifelse(key == "clean", "clean",
-                        sub("^imp_|^prep_", "", key))
-
-    results[[key]] <- data.frame(
-      key        = key,
-      stage      = stage,
-      condition  = condition,
-      model_type = model_type,
-      auc        = auc_val,
-      gini       = gini_val,
-      ks         = ks_val,
-      brier      = brier_val,
-      obs_rate   = obs_rate,
-      pred_rate  = exp_rate,
-      oe_ratio   = oe_ratio,
-      stringsAsFactors = FALSE
-    )
-  }
-
-  # Stack and parse type/severity
-  metrics <- do.call(rbind, results)
-  rownames(metrics) <- NULL
-
-  metrics$type <- ifelse(
-    metrics$condition == "clean", "clean",
-    sub("_mild$|_severe$", "", metrics$condition)
-  )
-  metrics$severity <- ifelse(
-    metrics$condition == "clean", "none",
-    ifelse(grepl("severe", metrics$condition), "severe", "mild")
-  )
-
-  metrics
-}
-
-```
-
-Running it for both models -- every model scores on the same clean data:
-
-```{r}
-
-glm_metrics <- evaluate_models(
-  models     = glm_results$models,
-  eval_data  = dat,
-  formula    = pd_formula,
-  model_type = "glm"
-)
-
-xgb_metrics <- evaluate_models(
-  models     = xgb_results$models,
-  eval_data  = dat,
-  formula    = pd_formula,
-  model_type = "xgboost"
-)
-
-# Combine into one table for comparison
-all_metrics <- rbind(glm_metrics, xgb_metrics)
-
-print(all_metrics[, c("model_type", "condition", "stage",
-                       "auc", "gini", "ks", "brier", "oe_ratio")])
-
-```
-
-### Discrimination: how much ranking power does each model lose?
-
-The primary question: when a model is trained on damaged data, how much
-worse does it rank-order firms by risk? AUC and Gini capture this
-directly. The clean-trained model sets the ceiling; any drop in the
-impaired or prepared rows is degradation caused by the data quality
-problem.
-
-The plot below shows Gini (more common in credit risk reporting than
-AUC) by condition and stage. The clean baseline appears as a horizontal
-reference line in every panel.
-
-```{r, fig.width=10, fig.height=6}
-
-# ── Gini degradation plot ──────────────────────────────────────────────
-
-condition_order <- c("mcar_mild", "mcar_severe",
-                     "mar_mild",  "mar_severe",
-                     "mnar_mild", "mnar_severe",
-                     "noise_mild", "noise_severe",
-                     "impl_mild", "impl_severe")
-
-plot_metrics <- all_metrics[all_metrics$condition != "clean", ]
-plot_metrics$condition <- factor(plot_metrics$condition, levels = condition_order)
-plot_metrics$stage     <- factor(plot_metrics$stage, levels = c("impaired", "prepared"))
-
-# Clean baselines for reference lines (one per model type)
-clean_gini <- all_metrics[all_metrics$condition == "clean",
-                          c("model_type", "gini")]
-
-ggplot(plot_metrics, aes(x = condition, y = gini,
-                         colour = stage, shape = stage)) +
-  geom_point(size = 3, position = position_dodge(width = 0.4)) +
-  geom_hline(data = clean_gini,
-             aes(yintercept = gini),
-             linetype = "dashed", colour = "grey40") +
-  facet_wrap(~ model_type, ncol = 1) +
-  scale_colour_manual(values = c(impaired = "#e74c3c", prepared = "#2ecc71")) +
-  scale_shape_manual(values = c(impaired = 16, prepared = 15)) +
-  labs(title    = "Discriminatory Power: Gini Coefficient",
-       subtitle = "Dashed line = clean-trained baseline | closer to line = better recovery",
-       x = NULL, y = "Gini") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        strip.text  = element_text(face = "bold"),
-        legend.position = "bottom")
-
-```
-
-### Calibration: do predicted PDs still match reality?
-
-The O/E ratio measures aggregate calibration -- is the average predicted
-PD close to the observed default rate? Since every model predicts on the
-same clean data (where the true default rate is fixed), any shift in O/E
-away from the clean baseline means the model's probability estimates
-have been distorted by impairment.
-
-The Brier score combines calibration and discrimination into a single
-proper scoring rule. A model that ranks firms well but assigns the wrong
-PD levels will have a good AUC but a poor Brier score; the gap between
-the two tells you whether the problem is discrimination or calibration.
-
-```{r, fig.width=10, fig.height=6}
-
-# ── Brier score degradation plot ───────────────────────────────────────
-
-clean_brier <- all_metrics[all_metrics$condition == "clean",
-                           c("model_type", "brier")]
-
-ggplot(plot_metrics, aes(x = condition, y = brier,
-                         colour = stage, shape = stage)) +
-  geom_point(size = 3, position = position_dodge(width = 0.4)) +
-  geom_hline(data = clean_brier,
-             aes(yintercept = brier),
-             linetype = "dashed", colour = "grey40") +
-  facet_wrap(~ model_type, ncol = 1) +
-  scale_colour_manual(values = c(impaired = "#e74c3c", prepared = "#2ecc71")) +
-  scale_shape_manual(values = c(impaired = 16, prepared = 15)) +
-  labs(title    = "Calibration Quality: Brier Score",
-       subtitle = "Dashed line = clean-trained baseline | lower is better",
-       x = NULL, y = "Brier Score") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        strip.text  = element_text(face = "bold"),
-        legend.position = "bottom")
-
-```
-
-```{r, fig.width=10, fig.height=6}
-
-# ── O/E ratio plot ─────────────────────────────────────────────────────
-
-clean_oe <- all_metrics[all_metrics$condition == "clean",
-                        c("model_type", "oe_ratio")]
-
-ggplot(plot_metrics, aes(x = condition, y = oe_ratio,
-                         colour = stage, shape = stage)) +
-  geom_point(size = 3, position = position_dodge(width = 0.4)) +
-  geom_hline(yintercept = 1.0, linetype = "solid", colour = "grey70", linewidth = 0.3) +
-  geom_hline(data = clean_oe,
-             aes(yintercept = oe_ratio),
-             linetype = "dashed", colour = "grey40") +
-  facet_wrap(~ model_type, ncol = 1) +
-  scale_colour_manual(values = c(impaired = "#e74c3c", prepared = "#2ecc71")) +
-  scale_shape_manual(values = c(impaired = 16, prepared = 15)) +
-  labs(title    = "Aggregate Calibration: Observed / Expected Ratio",
-       subtitle = "Solid grey = perfect calibration (1.0) | Dashed = clean baseline",
-       x = NULL, y = "O/E Ratio") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1),
-        strip.text  = element_text(face = "bold"),
-        legend.position = "bottom")
-
-```
-
-### Calibration plot: predicted vs. observed by PD grade
-
-The grade-level calibration plot uses the same Moody's-aligned PD
-buckets from Stage 4c. For each grade, we compare the average predicted
-PD against the observed default frequency. A well-calibrated model
-produces points along the 45-degree line. Impairment can pull points off
-the diagonal -- either by mispricing individual grades or by shifting
-the entire curve.
-
-We show this for the clean baseline and all prepared conditions (the
-ones a practitioner would actually deploy). Impaired conditions are
-omitted for readability; the prepared-vs-clean comparison is the one
-that answers the research question.
-
-```{r, fig.width=10, fig.height=7}
-
-# ── Calibration plot helper ────────────────────────────────────────────
-
-build_calibration_data <- function(models,
-                                   eval_data,
-                                   formula,
-                                   model_type = c("glm", "xgboost")) {
-
-  model_type <- match.arg(model_type)
-  response   <- all.vars(formula)[1]
-  predictors <- all.vars(formula)[-1]
-  actual     <- eval_data[[response]]
-
-  # Same grade boundaries as assign_pd_grades()
-  grade_breaks <- c(0, 0.00001, 0.0006, 0.0011, 0.003,
-                    0.007, 0.015, 0.03, 0.08, 0.15, 1.0)
-  grade_labels <- as.character(1:10)
-
-  cal_list <- vector("list", length(models))
-  names(cal_list) <- names(models)
-
-  for (key in names(models)) {
-
-    mod <- models[[key]]
-
-    if (model_type == "glm") {
-      pd_pred <- predict(mod, newdata = eval_data, type = "response")
-    } else {
-      X <- as.matrix(eval_data[, predictors, drop = FALSE])
-      pd_pred <- predict(mod, xgb.DMatrix(data = X))
-    }
-
-    grade <- cut(pd_pred,
-                 breaks = grade_breaks,
-                 labels = grade_labels,
-                 include.lowest = TRUE,
-                 right = TRUE)
-
-    tmp <- data.frame(pd_pred = pd_pred, actual = actual,
-                      grade = as.integer(as.character(grade)))
-
-    agg <- aggregate(cbind(pd_pred, actual) ~ grade, data = tmp, FUN = mean)
-    counts <- aggregate(actual ~ grade, data = tmp, FUN = length)
-    names(counts)[2] <- "n"
-    agg <- merge(agg, counts, by = "grade")
-
-    names(agg)[names(agg) == "pd_pred"] <- "mean_pred_pd"
-    names(agg)[names(agg) == "actual"]  <- "obs_default_rate"
-
-    # Parse key
-    stage <- ifelse(key == "clean", "clean",
-                    ifelse(grepl("^imp_", key), "impaired", "prepared"))
-    condition <- ifelse(key == "clean", "clean",
-                        sub("^imp_|^prep_", "", key))
-
-    agg$key        <- key
-    agg$stage      <- stage
-    agg$condition  <- condition
-    agg$model_type <- model_type
-
-    cal_list[[key]] <- agg
-  }
-
-  cal_df <- do.call(rbind, cal_list)
-  rownames(cal_df) <- NULL
-  cal_df
-}
-
-```
-
-```{r, fig.width=10, fig.height=7}
-
-# ── Build calibration data for both model types ────────────────────────
-
-glm_cal <- build_calibration_data(
-  models     = glm_results$models,
-  eval_data  = dat,
-  formula    = pd_formula,
-  model_type = "glm"
-)
-
-xgb_cal <- build_calibration_data(
-  models     = xgb_results$models,
-  eval_data  = dat,
-  formula    = pd_formula,
-  model_type = "xgboost"
-)
-
-all_cal <- rbind(glm_cal, xgb_cal)
-
-# Filter to clean + prepared only (what a practitioner would deploy)
-cal_plot_data <- all_cal[all_cal$stage %in% c("clean", "prepared"), ]
-
-# For prepared conditions, parse type + severity for faceting
-cal_plot_data$type <- ifelse(
-  cal_plot_data$condition == "clean", "clean",
-  sub("_mild$|_severe$", "", cal_plot_data$condition)
-)
-cal_plot_data$severity <- ifelse(
-  cal_plot_data$condition == "clean", "none",
-  ifelse(grepl("severe", cal_plot_data$condition), "severe", "mild")
-)
-
-# Label for faceting: one panel per impairment type
-cal_plot_data$facet_label <- ifelse(
-  cal_plot_data$condition == "clean", "clean",
-  cal_plot_data$condition
-)
-
-condition_order <- c("clean",
-                     "mcar_mild", "mcar_severe",
-                     "mar_mild",  "mar_severe",
-                     "mnar_mild", "mnar_severe",
-                     "noise_mild", "noise_severe",
-                     "impl_mild", "impl_severe")
-
-cal_plot_data$facet_label <- factor(cal_plot_data$facet_label,
-                                    levels = condition_order)
-
-ggplot(cal_plot_data,
-       aes(x = mean_pred_pd, y = obs_default_rate,
-           colour = model_type, shape = stage)) +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey50") +
-  geom_point(size = 2.5) +
-  facet_wrap(~ facet_label, ncol = 3, scales = "free") +
-  scale_colour_manual(values = c(glm = "#3498db", xgboost = "#e67e22")) +
-  scale_shape_manual(values = c(clean = 17, prepared = 15)) +
-  labs(title    = "Calibration Plot: Predicted PD vs. Observed Default Rate by Grade",
-       subtitle = "Dashed line = perfect calibration | Clean (triangle) vs. Prepared (square)",
-       x = "Mean Predicted PD (within grade)",
-       y = "Observed Default Rate (within grade)") +
-  theme_minimal() +
-  theme(strip.text = element_text(face = "bold"),
-        legend.position = "bottom")
-
-```
-
-### Summary: degradation at a glance
-
-A compact summary showing all five metrics for each condition, with the
-clean baseline at the top for reference. The `delta_gini` and
-`delta_brier` columns show absolute change from the clean-trained model,
-making it easy to scan for which conditions hurt most and whether
-preparation recovers the damage.
-
-```{r}
-
-# ── Summary table with deltas from clean ───────────────────────────────
-
-# Get clean baselines
-clean_baselines <- all_metrics[all_metrics$condition == "clean",
-                               c("model_type", "gini", "brier", "oe_ratio")]
-names(clean_baselines) <- c("model_type", "clean_gini", "clean_brier", "clean_oe")
-
-summary_metrics <- merge(all_metrics, clean_baselines, by = "model_type")
-summary_metrics$delta_gini  <- summary_metrics$gini  - summary_metrics$clean_gini
-summary_metrics$delta_brier <- summary_metrics$brier - summary_metrics$clean_brier
-summary_metrics$delta_oe    <- summary_metrics$oe_ratio - summary_metrics$clean_oe
-
-# Order for readability
-summary_metrics$condition <- factor(
-  summary_metrics$condition,
-  levels = c("clean",
-             "mcar_mild", "mcar_severe",
-             "mar_mild",  "mar_severe",
-             "mnar_mild", "mnar_severe",
-             "noise_mild", "noise_severe",
-             "impl_mild", "impl_severe")
-)
-
-summary_metrics <- summary_metrics[order(summary_metrics$model_type,
-                                         summary_metrics$condition,
-                                         summary_metrics$stage), ]
-
-print(summary_metrics[, c("model_type", "condition", "stage",
-                           "gini", "delta_gini",
-                           "brier", "delta_brier",
-                           "oe_ratio", "delta_oe",
-                           "ks")])
-
-```
 
 # **Stage 6: Monte Carlo**
+
+

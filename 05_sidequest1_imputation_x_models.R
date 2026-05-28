@@ -1,6 +1,7 @@
 # ============================================================================
-# 05_SideQuest1_imputation_comparison.R
-#
+# 05 SideQuest 1: Imputation Comparison x Model Type
+# ============================================================================
+
 # SQ1: Does the imputation method matter for coefficient recovery?
 #
 # Compares three imputation strategies — RR regression, median, and MICE —

@@ -1,5 +1,5 @@
 # ============================================================================
-# Feature Reliability Score (FRS) -- per-feature data quality diagnostic
+# 03 Feature Reliability Score (FRS) -- per-feature data quality diagnostic
 # ============================================================================
 #
 # Reference: Igl & Gruber (2025), "Handbuch Datenqualitaet", Chapter 8.
