@@ -198,6 +198,19 @@ The idea: FRS is a pre-modeling diagnostic; features with low FRS are prioritize
 
 ## Stage 5: Evaluation Metrics
 
+- Gini (discrimination: how much ranking power does each model lose?)
+- Brier score (discrimination & calibration combined: does the model give higher
+PDs to firms that actually default, and are the PDs accurate?)
+- Observed / Expected ratio (pure calibration on aggregate level)
+- Calibration plot based on Moody's grade buckets
+
+
+Overarching themes on first run:
+- XGboost is more robust than GLM in absolute terms, but GLM complete case analysis can actually work really well for missingness conditions
+- Preparation helps calibration, but often hurts discrimination
+- Most dangerous impairments are noise and implausible values: Gini degrades but O/E stays flat -- looks ok on the surface but secretly loses the rank-ordering
+- MNAR is where regression imputation is most theoretically inappropriate and where distortion is most visible
+
 
 ---
 

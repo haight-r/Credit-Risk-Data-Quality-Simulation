@@ -560,9 +560,8 @@ Phase two: (right) panel drift
 
 Phase three: linear predictor combining both of the above phases 
 
-```{r}
-# ── DAG of the Data Generating Process ───────────────────────────────
-
+```{r, fig.width=10, fig.height=6, dpi=300}
+# ── Detailed DAG of the Data Generating Process ─────────────────────────────
 
 grViz("
 digraph DGP {
@@ -574,56 +573,32 @@ digraph DGP {
          shape = box, penwidth = 0.6]
   edge  [color = '#888888', penwidth = 0.7, arrowsize = 0.6]
 
-  # ── Phase 1: Root variables (drawn once per firm) ────────────────
-  subgraph cluster_exog {
-    label = 'Root variables (drawn once per firm)'
-    fontsize = 10; fontcolor = '#777777'
-    style = dashed; color = '#CCCCCC'
+  # ── Root variables (drawn once per firm) ────────────────────────
+  firm_age   [label = 'firm_age',   fillcolor = '#F1EFE8', color = '#B4B2A9']
+  sector     [label = 'sector',     fillcolor = '#E1F5EE', color = '#5DCAA5']
+  trajectory [label = 'trajectory', fillcolor = '#EEEDFE', color = '#AFA9EC']
 
-    firm_age   [label = 'firm_age',   fillcolor = '#F1EFE8', color = '#B4B2A9']
-    sector     [label = 'sector',     fillcolor = '#E1F5EE', color = '#5DCAA5']
-    trajectory [label = 'trajectory', fillcolor = '#EEEDFE', color = '#AFA9EC']
-  }
+  # ── Derived at origination ─────────────────────────────────────
+  log_assets     [label = 'log_assets',     fillcolor = '#E6F1FB', color = '#85B7EB']
+  debt_to_equity [label = 'debt_to_equity', fillcolor = '#E6F1FB', color = '#85B7EB']
+  interest_cov   [label = 'interest_cov',   fillcolor = '#E6F1FB', color = '#85B7EB']
+  crefo          [label = 'crefo',          fillcolor = '#FAECE7', color = '#F0997B']
 
-  # ── Phase 1: Derived at origination ─────────────────────────────
-  subgraph cluster_orig {
-    label = 'Derived at origination'
-    fontsize = 10; fontcolor = '#777777'
-    style = dashed; color = '#CCCCCC'
+  # ── Panel drift (t > 1) ───────────────────────────────────────
+  pd_curr      [label = 'pd_curr\\n(drift weight)',
+                fillcolor = '#F1EFE8', color = '#B4B2A9', shape = ellipse]
+  annual_update [label = 'Annual updates\\nlog_assets, d/e, int_cov',
+                fillcolor = '#E6F1FB', color = '#85B7EB']
+  crefo_refresh [label = 'crefo refresh\\n(p = 0.5)',
+                fillcolor = '#FAECE7', color = '#F0997B']
 
-    log_assets     [label = 'log_assets',     fillcolor = '#E6F1FB', color = '#85B7EB']
-    debt_to_equity [label = 'debt_to_equity', fillcolor = '#E6F1FB', color = '#85B7EB']
-    interest_cov   [label = 'interest_cov',   fillcolor = '#E6F1FB', color = '#85B7EB']
-    crefo          [label = 'crefo',          fillcolor = '#FAECE7', color = '#F0997B']
-  }
-
-  # ── Phase 2: Panel drift (t > 1) ───────────────────────────────
-  subgraph cluster_drift {
-    label = 'Panel drift (t > 1): state-dependent random walk'
-    fontsize = 10; fontcolor = '#777777'
-    style = dashed; color = '#CCCCCC'
-
-    pd_curr      [label = 'pd_curr\\n(drift weight)',
-                  fillcolor = '#F1EFE8', color = '#B4B2A9', shape = ellipse]
-    annual_update [label = 'Annual updates\\nlog_assets, d/e, int_cov',
-                  fillcolor = '#E6F1FB', color = '#85B7EB']
-    crefo_refresh [label = 'crefo refresh\\n(p = 0.5)',
-                  fillcolor = '#FAECE7', color = '#F0997B']
-  }
-
-  # ── Phase 3: Linear predictor → default ────────────────────────
-  subgraph cluster_outcome {
-    label = 'Outcome'
-    fontsize = 10; fontcolor = '#777777'
-    style = dashed; color = '#CCCCCC'
-
-    gastro_trend [label = 'gastro_trend\\nsector_2 × (year − 2015)',
-                 fillcolor = '#E1F5EE', color = '#5DCAA5']
-    linpred      [label = 'linpred\\nall _z predictors + sector dummies',
-                 fillcolor = '#FAEEDA', color = '#FAC775']
-    default      [label = 'default\\nBernoulli(pd_true)',
-                 fillcolor = '#FCEBEB', color = '#F09595']
-  }
+  # ── Linear predictor → default ────────────────────────────────
+  gastro_trend [label = 'gastro_trend\\nsector_2 × (year − 2015)',
+               fillcolor = '#E1F5EE', color = '#5DCAA5']
+  linpred      [label = 'linpred\\nall _z predictors + sector dummies',
+               fillcolor = '#FAEEDA', color = '#FAC775']
+  default      [label = 'default\\nBernoulli(pd_true)',
+               fillcolor = '#FCEBEB', color = '#F09595']
 
   # ── Phase 1 edges: origination dependencies ────────────────────
   firm_age -> log_assets
@@ -760,7 +735,7 @@ Variables included: financial ratios and firm_age. Sector and Crefo are
 excluded: sector is a simple categorical entry unlikely to be missing;
 Crefo missingness is modelled separately under the MAR condition.
 
-Mild: \~8% missing per cell, Severe: \~28% missing per cell
+Mild: ~8% missing per cell, Severe: ~28% missing per cell
 
 ------------------------------------------------------------------------
 
@@ -907,7 +882,7 @@ reflects real reporting behavior — a firm that stops disclosing bad
 financials does not voluntarily resume disclosure.
 
 Intercepts tuned to achieve overall missing rates comparable to MCAR/MAR
-after persistence propagation: Mild: \~8% of firm-years, Severe: \~28%
+after persistence propagation: Mild: ~8% of firm-years, Severe: ~28%
 of firm-years
 
 Note: because persistence amplifies the initial trigger rate, the
@@ -1453,9 +1428,12 @@ frs_summary <- summarize_frs(frs_all)
 
 **FRS Summary Tables**
 
-Score Bewertung \>95 %: sehr hohe Datenqualität 90–95 %: gute
-Datenqualität 80–90 %: mittlere Datenqualität \<80 %: kritische
-Datenqualität
+| Score       | Bewertung                 |
+|-------------|---------------------------|
+| > 95%       | sehr hohe Datenqualität   |
+| 90–95%      | gute Datenqualität        |
+| 80–90%      | mittlere Datenqualität    |
+| < 80%       | kritische Datenqualität   |
 
 ```{r}
 # Quick look by impairment
@@ -1892,6 +1870,9 @@ ggplot(frs_comp_summary[frs_comp_summary$severity == "severe", ],
 
 ```
 
+
+------------------------------------------------------------------------
+
 # **Stage 4: Modeling**
 
 ## 4a Logistic Regression
@@ -2295,7 +2276,7 @@ ggplot(xgb_results$importance,
 
 After fitting models, the next step in a real-world PD framework is to
 assign each firm to a risk grade. This maps continuous predicted PDs
-onto a discrete rating scale, analogous to how Moody's maps default
+onto a discrete rating scale, like how Moody's maps default
 probabilities to letter grades (Aaa through C).
 
 We use a 10-grade scale (1 = safest, 10 = riskiest) with PD boundaries
@@ -2315,7 +2296,7 @@ mapping is:
 | 9     | Caa                | 15.00%         |
 | 10    | Ca-C / Default     | 100.00%        |
 
-Given the DGP's \~2% average default rate, most firms should cluster in
+Given the DGP's ~2% average default rate, most firms should cluster in
 grades 5-8, with relatively few in the tails. This is realistic for a
 B2B/SME portfolio.
 
@@ -2565,12 +2546,12 @@ the RR model validation framework, we measure two of the three pillars:
 **discrimination** (can the model rank-order firms by risk?) and
 **calibration** (do predicted PDs match observed default frequencies?).
 
-The third pillar -- **stability** (temporal drift, population stability)
--- is outside scope. Our simulation generates a single cross-section per
-iteration; there is no time-separated holdout against which to measure
-drift. Stability testing requires a genuine temporal gap between
-development and validation samples, which the MC design does not
-produce.
+The third pillar — stability (temporal drift, population stability) — 
+is outside scope. Although the simulation generates a longitudinal panel 
+spanning 2005–2025, the research question concerns data quality effects 
+on model reliability rather than temporal model degradation. Stability 
+testing would require a dedicated development/validation time split, 
+which is orthogonal to the Monte Carlo design and left for future work.
 
 **Evaluation design.** Every model -- clean-trained, impaired-trained,
 prepared-trained -- predicts on the **same clean dataset**. This is the
@@ -2793,6 +2774,16 @@ ggplot(plot_metrics, aes(x = condition, y = gini,
 
 ```
 
+GINI / DISCRIMINATION NOTES:
+- XGBoost clean baseline (~0.675) meaningfully outperforms GLM (~0.60) due to its ability to capture nonlinearities in the DGP
+GLM is surprisingly robust across missingness conditions — complete-case deletion preserves clean relationships on smaller but undistorted data
+- Preparation (regression imputation) generally hurts discrimination relative to native NA handling, especially for XGBoost under MCAR, because imputed values compress the feature distribution and dull split quality
+- Noise is where GLM shows more robustness than XGBoost relative to their own baselines, but XGBoost at its worst still beats GLM's clean ceiling
+- Implausible values hit both models hardest on discrimination
+
+
+
+
 ### Calibration: do predicted PDs still match reality?
 
 The O/E ratio measures aggregate calibration -- is the average predicted
@@ -2832,6 +2823,17 @@ ggplot(plot_metrics, aes(x = condition, y = brier,
 
 ```
 
+
+Brier score (discrimination + calibration combined)
+
+- XGBoost again has the better clean baseline
+- GLM complete-case analysis holds calibration well until noise severe and implausible conditions, where it jumps sharply
+For XGBoost, impaired and prepared are nearly identical across most conditions — degradation is driven by the information loss itself, not the repair strategy
+- MAR is the most stable condition for both models, consistent with the mechanism (missingness on crefo is independent of default risk conditional on observables)
+- MNAR prepared takes a hit in GLM because regression imputation pulls the missing interest_cov tail toward the center, underestimating risk for the most distressed firms
+
+
+
 ```{r, fig.width=10, fig.height=6}
 
 # ── O/E ratio plot ─────────────────────────────────────────────────────
@@ -2858,6 +2860,17 @@ ggplot(plot_metrics, aes(x = condition, y = oe_ratio,
         legend.position = "bottom")
 
 ```
+
+Notes O/E ratio (pure calibration):
+
+- This is where preparation actually helps — it recovers aggregate calibration even when it hurts discrimination (why? )
+- MNAR severe is the standout: GLM impaired underpredicts by ~15% (O/E ≈ 1.15), preparation recovers roughly half of that
+Noise and implausible values look stable on O/E despite degraded Gini — this is the dangerous pattern where a supervisor checking only aggregate calibration would miss the problem
+- MCAR preparation makes GLM overpredict slightly (O/E < 1.0) — conservative but costly
+
+
+
+
 
 ### Calibration plot: predicted vs. observed by PD grade
 
@@ -3010,6 +3023,12 @@ ggplot(cal_plot_data,
         legend.position = "bottom")
 
 ```
+
+Calibration plot (grade-level calibration) (re-do)
+
+- Grade-level calibration mostly holds across conditions, confirming that the O/E stability isn't just offsetting errors across grades
+- Main vulnerability is in the highest-PD grades, where regression imputation compresses the tail and underpredicts risk for the riskiest firms
+
 
 ### Summary: degradation at a glance
 
