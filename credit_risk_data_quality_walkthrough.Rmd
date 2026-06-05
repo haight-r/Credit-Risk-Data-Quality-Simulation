@@ -59,7 +59,7 @@ tend to be larger, larger firms tend to have lower leverage Plus --
 adding randomness
 
 c)  **log_assets**: proxy for firm size, dependent on age and sector
-d)  **debt to equity**: higher leverage is more dangerous --\> dependent
+d)  **debt to equity**: higher leverage is more dangerous -- dependent
     on how big the firm is and how old it is
 e)  **interest_cov**: proxy for cash flow
 f)  **Crefo score**. (see below) Dependent on most things above.
@@ -72,14 +72,22 @@ f)  **Crefo score**. (see below) Dependent on most things above.
 This is the "ground truth" -- can be confirmed from RR All are
 standardized (change in log-odds per 1 SD increase)
 
-beta0 \<- -3.9 this is the intercept -- should be whatever the log odds
-of the default rate is beta_log_assets \<- -0.2 larger firms less likely
-to default beta_debt_to_equity \<- 0.4 higher leverage = higher risk
-beta_interest_cov \<- -0.3 higher coverage of interest expenses = lower
-risk beta_sector2 \<- 0.4 gastro is the riskiest sector beta_sector3 \<-
-0.18 manufacturing slightly riskier beta_firm_age \<- -0.1 older firms
-slightly safer beta_crefo \<- 0.3 higher Crefo score → higher default
-risk
+beta0 <- -3.9 this is the intercept -- should be whatever the log odds
+of the default rate is 
+
+beta_log_assets <- -0.2 larger firms less likely to default 
+
+beta_debt_to_equity <- 0.4 higher leverage = higher risk
+
+beta_interest_cov <- -0.3 higher coverage of interest expenses = lower risk 
+
+beta_sector2 <- 0.4 gastro is the riskiest sector 
+
+beta_sector3 <- 0.18 manufacturing slightly riskier 
+
+beta_firm_age <- -0.1 older firms slightly safer 
+
+beta_crefo <- 0.3 higher Crefo score → higher default risk
 
 ------------------------------------------------------------------------
 
@@ -560,7 +568,7 @@ Phase two: (right) panel drift
 
 Phase three: linear predictor combining both of the above phases 
 
-```{r, fig.width=10, fig.height=6, dpi=300}
+```{r}
 # ── Detailed DAG of the Data Generating Process ─────────────────────────────
 
 grViz("
@@ -603,7 +611,7 @@ digraph DGP {
   # ── Phase 1 edges: origination dependencies ────────────────────
   firm_age -> log_assets
   sector   -> log_assets     [label = '  ±0.3', fontsize = 9, fontcolor = '#999999']
-  firm_age -> debt_to_equity [style = dashed, label = '  −0.02·z', fontsize = 9, fontcolor = '#999999']
+  firm_age -> debt_to_equity [label = '  −0.02·z', fontsize = 9, fontcolor = '#999999']
   log_assets -> debt_to_equity [label = '  −0.1·z', fontsize = 9, fontcolor = '#999999']
   debt_to_equity -> interest_cov [label = '  −0.4·z', fontsize = 9, fontcolor = '#999999']
   log_assets -> interest_cov [label = '  +0.3·z', fontsize = 9, fontcolor = '#999999']
@@ -1048,9 +1056,15 @@ distortions. This reflects real-world data quality issues: decimal
 shifts, unit confusion, stale data, and system migration artefacts do
 not produce uniform error patterns.
 
-Three error types per variable: 1. Domain-invalid: clearly impossible
-values (negative age, etc.) 2. Extreme outlier: technically possible but
-far outside normal range 3. Subtle: within plausible range but wrong
+Three error types per variable: 
+
+1. Domain-invalid: clearly impossible
+values (negative age, etc.) 
+
+2. Extreme outlier: technically possible but
+far outside normal range 
+
+3. Subtle: within plausible range but wrong
 (decimal shifts, swaps [numerator / denominator, or age in months not
 years])
 
@@ -1767,7 +1781,6 @@ Last thing before modeling: Comparing FRS across imputation methods for
 missingness
 
 ```{r}
-
 prep_regr_list <- list(
   mcar_mild    = dat_mcar_mild_prepped,
   mcar_severe  = dat_mcar_severe_prepped,
@@ -1780,27 +1793,28 @@ prep_regr_list <- list(
   impl_mild    = dat_impl_mild_prepped,
   impl_severe  = dat_impl_severe_prepped
 )
+```
 
-median_list <- list(
-  mcar_mild   = dat_mcar_mild_prepped_med,
-  mcar_severe = dat_mcar_severe_prepped_med,
-  mar_mild    = dat_mar_mild_prepped_med,
-  mar_severe  = dat_mar_severe_prepped_med,
-  mnar_mild   = dat_mnar_mild_prepped_med,
-  mnar_severe = dat_mnar_severe_prepped_med
+
+Sidequest 1: Imputation Test
+
+```{r}
+source("05_sidequest1_imputation_x_models.R")
+# Now median_full and mice_full exist with all 10 conditions
+```
+
+
+Last thing before modeling: Comparing FRS across imputation methods for
+missingness
+
+```{r}
+frs_compare <- compare_frs_imputation(
+  dat, impaired_list, prep_regr_list,
+  median_full, mice_full,
+  result$winsor_bounds, result$plausibility_bounds
 )
-
-mice_list <- list(
-  mcar_mild   = dat_mcar_mild_prepped_mice,
-  mcar_severe = dat_mcar_severe_prepped_mice,
-  mar_mild    = dat_mar_mild_prepped_mice,
-  mar_severe  = dat_mar_severe_prepped_mice,
-  mnar_mild   = dat_mnar_mild_prepped_mice,
-  mnar_severe = dat_mnar_severe_prepped_mice
-)
-
-frs_compare <- compare_frs_imputation(dat, impaired_list, prep_regr_list, median_list, mice_list, result$winsor_bounds, result$plausibility_bounds)
 frs_compare
+
 
 
 ```
@@ -1871,6 +1885,79 @@ ggplot(frs_comp_summary[frs_comp_summary$severity == "severe", ],
 ```
 
 
+```{r}
+# Filter to severe + drop the aggregate MEAN row
+frs_var_severe <- frs_compare %>%
+  filter(severity == "severe", var != "MEAN")
+
+# Reshape: one column per stage for the heatmap facets
+# frs_compare should already have columns: type, severity, var, stage, frs
+# (plus the component columns)
+
+ggplot(frs_var_severe,
+       aes(x = type, y = var, fill = frs)) +
+  geom_tile(colour = "white", linewidth = 0.4) +
+  geom_text(aes(label = sprintf("%.3f", frs)), size = 2.5) +
+  facet_wrap(~ stage, nrow = 1) +
+  scale_fill_gradient2(
+    low = "#e74c3c", mid = "#f9e79f", high = "#2ecc71",
+    midpoint = 0.95, limits = c(0.85, 1),
+    oob = scales::squish,          # clamp anything outside range
+    name = "FRS"
+  ) +
+  labs(
+    title    = "Per-Variable FRS: Severe Impairment × Imputation Method",
+    subtitle = "Red = unreliable | Green = healthy | Read left→right to see recovery",
+    x = "Impairment type", y = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x  = element_text(angle = 45, hjust = 1),
+    strip.text    = element_text(face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+```
+
+```{r}
+# Pick whichever impairment type you want to drill into
+focus_type <- "implausible"   # swap to "MNAR", "noise", etc.
+
+frs_comp_var <- frs_compare %>%
+  filter(severity == "severe", type == focus_type, var != "MEAN") %>%
+  pivot_longer(
+    cols      = c(completeness, plausibility, outlier, consistency),
+    names_to  = "component",
+    values_to = "score"
+  )
+
+frs_comp_var$stage <- factor(frs_comp_var$stage,
+                             levels = c("impaired", "regression", "median", "mice"))
+
+ggplot(frs_comp_var,
+       aes(x = stage, y = score, fill = stage)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = sprintf("%.3f", score)), vjust = -0.3, size = 2.2) +
+  facet_grid(component ~ var) +
+  coord_cartesian(ylim = c(0.80, 1.02)) +
+  scale_fill_manual(values = c(impaired   = "#e74c3c",
+                               regression = "#3498db",
+                               median     = "#f39c12",
+                               mice       = "#2ecc71")) +
+  labs(
+    title    = paste0("FRS Component Drill-Down: ", focus_type, " (severe)"),
+    subtitle = "Which quality dimension degrades, and which method repairs it?",
+    x = NULL, y = "Score"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text.x     = element_text(angle = 45, hjust = 1),
+    strip.text       = element_text(face = "bold", size = 8),
+    panel.spacing    = unit(0.5, "lines")
+  )
+```
+
+
 ------------------------------------------------------------------------
 
 # **Stage 4: Modeling**
@@ -1910,90 +1997,6 @@ Each fit stores:
 -   **Convergence flag** -- glm can occasionally fail to converge on
     heavily impaired data; we want to know when that happens rather than
     silently carrying a bad fit forward
-
-```{r}
-
-# ── Fit logistic regression across all conditions ──────────────────────
-
-fit_logistic_models <- function(clean_data,
-                                impaired_list,
-                                prepared_list,
-                                formula,
-                                true_betas) {
-
-  # Build a master list: stage label + dataset, all in one sequence.
-  # Clean appears once; impaired and prepared share the same condition
-  # names but get different stage tags.
-  master <- list()
-  master[["clean"]] <- list(stage = "clean", data = clean_data)
-
-  for (nm in names(impaired_list)) {
-    master[[paste0("imp_", nm)]] <- list(stage = "impaired", data = impaired_list[[nm]])
-  }
-  for (nm in names(prepared_list)) {
-    master[[paste0("prep_", nm)]] <- list(stage = "prepared", data = prepared_list[[nm]])
-  }
-
-  # Pre-allocate storage
-  models       <- vector("list", length(master))
-  coefficients <- vector("list", length(master))
-  names(models) <- names(coefficients) <- names(master)
-
-  for (key in names(master)) {
-
-    d     <- master[[key]]$data
-    stage <- master[[key]]$stage
-
-    # Fit the model -- glm uses na.action = na.omit by default,
-    # so raw impaired datasets with NAs get complete-case analysis
-    fit <- glm(formula, data = d, family = binomial())
-
-    models[[key]] <- fit
-
-    # Coefficient recovery table
-    est <- coef(fit)
-    recovery <- data.frame(
-      key       = key,
-      stage     = stage,
-      condition = ifelse(stage == "clean", "clean",
-                         sub("^imp_|^prep_", "", key)),
-      term      = names(true_betas),
-      true      = as.numeric(true_betas),
-      estimated = as.numeric(est),
-      diff      = as.numeric(est) - as.numeric(true_betas),
-      abs_diff  = abs(as.numeric(est) - as.numeric(true_betas)),
-      n_obs     = nobs(fit),
-      stringsAsFactors = FALSE
-    )
-
-    coefficients[[key]] <- recovery
-
-    if (!fit$converged) {
-      cat(sprintf("[WARNING] glm did not converge for: %s\n", key))
-    }
-  }
-
-  # Stack into one long data.frame
-  coef_recovery <- do.call(rbind, coefficients)
-  rownames(coef_recovery) <- NULL
-
-  # Parse condition into impairment type + severity
-  coef_recovery$type <- ifelse(
-    coef_recovery$condition == "clean", "clean",
-    sub("_mild$|_severe$", "", coef_recovery$condition)
-  )
-  coef_recovery$severity <- ifelse(
-    coef_recovery$condition == "clean", "none",
-    ifelse(grepl("severe", coef_recovery$condition), "severe", "mild")
-  )
-
-  list(
-    models        = models,          # named list of glm objects
-    coef_recovery = coef_recovery    # long-format data.frame
-  )
-}
-
-```
 
 Running it on all conditions -- raw impaired data (impaired_list) and
 regression-imputed prepared data (prep_regr_list):
@@ -2094,7 +2097,7 @@ Key structural differences from glm that matter here:
     conditions. Any performance difference is then attributable to the
     data, not to tuning. The defaults below are conservative and
     standard for binary credit risk: shallow trees, moderate learning
-    rate, early stopping to avoid overfitting.(!! check with Sophie)
+    rate, early stopping to avoid overfitting. 
 
 ```{r, warning=FALSE, message=FALSE}
 
@@ -2775,6 +2778,7 @@ ggplot(plot_metrics, aes(x = condition, y = gini,
 ```
 
 GINI / DISCRIMINATION NOTES:
+
 - XGBoost clean baseline (~0.675) meaningfully outperforms GLM (~0.60) due to its ability to capture nonlinearities in the DGP
 GLM is surprisingly robust across missingness conditions — complete-case deletion preserves clean relationships on smaller but undistorted data
 - Preparation (regression imputation) generally hurts discrimination relative to native NA handling, especially for XGBoost under MCAR, because imputed values compress the feature distribution and dull split quality
