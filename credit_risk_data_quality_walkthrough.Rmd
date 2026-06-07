@@ -518,7 +518,6 @@ external rating that depends on all of the above (except age)
 
 # ── Simple DAG: Origination-level variable dependencies ──────────────
 
-
 grViz("
 digraph DGP_simple {
 
@@ -555,8 +554,6 @@ digraph DGP_simple {
   {rank = same; log_assets; debt_to_equity; interest_cov}
 }
 ")
-
-
 
 ```
 
@@ -1189,7 +1186,6 @@ dat_impl_severe <- impair_implausible(dat, result$scaling, severity = "severe")
 
 # ── DGP Checks ────────────────────────────────
 
-
 # Do deteriorating firms actually have rising debt-equity and falling interest coverage over time?
 det_firms <- dat[dat$trajectory == "deteriorating", ]
 cat("Deteriorating firms — mean dte year 1:", 
@@ -1484,7 +1480,7 @@ Last step before modeling:
 ## **Stage 3: Data Preparation**
 
 ```{r}
-prepare_for_modeling <- function(dat, scaling, method = "regression",
+prepare_for_modeling <- function(dat, scaling, method = "ersatzwert",
                                  model_formula = NULL, label = NULL) {
   
     # Auto-generate label from impairment metadata if not provided
@@ -1505,14 +1501,14 @@ prepare_for_modeling <- function(dat, scaling, method = "regression",
   #   4. Recompute _z columns using clean scaling parameters
   #
   # The method argument controls the imputation strategy:
-  #   "regression" — regression-based single imputation (default).
-  #              Fits logistic regression on complete cases, then for each
-  #              row with missingness, solves the linear predictor equation
-  #              backwards for the missing z-score, anchored to the overall
-  #              sample default rate. Produces firm-specific imputed values
-  #              that are consistent with the model's covariate structure.
-  #              Recommended by Risk Research as their standard approach.
-  #              Requires model_formula to be specified.
+  #   "ersatzwert" — RR univariate Ersatzwert imputation (default).
+  #              For each variable independently: fits a univariate logistic
+  #              regression (default ~ x) on non-missing cases, computes the
+  #              observed default rate among missing cases (AR_MV), and solves
+  #              for the x-value that would produce that default rate:
+  #              Ersatzwert = (logit(AR_MV) - β₀) / β₁
+  #              All missing rows receive the same replacement value per variable.
+  #              Implements the RR development-phase imputation methodology.
   #   "median" — univariate median imputation (PD-neutral baseline;
   #              maps to ~z=0 after standardisation, adding approximately
   #              zero to the linear predictor). 
@@ -1563,99 +1559,57 @@ prepare_for_modeling <- function(dat, scaling, method = "regression",
   
   
   # ---- Prep Part 3: Imputation 3 ways --------
-  # ---- Regression (default), median, MICE ----
+  # ---- Ersatzwert (default), median, MICE ----
   
   if (has_missing) {
     
-    if (method == "regression") {
-      
-
-      if (is.null(model_formula)) {
-        stop("model_formula is required for regression-based imputation.")
-      }
-
+    if (method == "ersatzwert") {
+    
       outcome_var <- all.vars(model_formula)[1]
-      predictor_vars <- all.vars(model_formula)[-1]
-
-      # Fit on complete cases
-      complete_idx <- complete.cases(dat_prepared[, c(outcome_var, predictor_vars)])
-      n_complete <- sum(complete_idx)
-
-      if (n_complete < 50) {
-        warning("Fewer than 50 complete cases — regression-based imputation may be unstable.")
-      }
-
-      model_fit <- glm(model_formula, data = dat_prepared[complete_idx, ],
-                        family = binomial())
-      betas <- coef(model_fit)
-
-      # Target: overall default rate from complete cases
-      target_p <- mean(dat_prepared[[outcome_var]][complete_idx], na.rm = TRUE)
-      target_logit <- log(target_p / (1 - target_p))
-
-      z_cap <- 4
-
-      # ── Vectorized imputation ──────────────────────────────────────
-      # Instead of looping row-by-row, we process one missing-variable
-      # at a time across all rows that need it. For each variable mv:
-      #   1. Find all rows where mv is NA
-      #   2. Compute eta_partial for those rows using matrix multiplication
-      #      on the observed (non-NA) predictors, substituting 0 for any
-      #      other predictor that's also NA (equivalent to the sequential
-      #      approach where earlier-imputed values start at ~0)
-      #   3. Solve: imputed_val = (target_logit - eta_partial) / beta_mv
-      #   4. Clamp to [-z_cap, z_cap] and write back
-
-      # Work on a matrix copy for speed (avoids repeated data.frame indexing)
-      pred_mat <- as.matrix(dat_prepared[, predictor_vars, drop = FALSE])
-
-      for (mv in predictor_vars) {
-        na_rows <- which(is.na(pred_mat[, mv]))
-        if (length(na_rows) == 0) next
-
-        beta_mv <- betas[mv]
-
-        if (is.na(beta_mv) || abs(beta_mv) < 1e-8) {
-          # beta ≈ 0: fall back to z-score mean
-          pred_mat[na_rows, mv] <- 0
+    
+      for (v in imputable_vars) {
+        z_col <- paste0(v, "_z")
+        if (!(z_col %in% names(dat_prepared))) next
+    
+        miss_idx <- is.na(dat_prepared[[z_col]])
+        if (!sum(miss_idx)) next
+    
+        # Default rate among firms with missing values for this variable
+        ar_mv <- mean(dat_prepared[[outcome_var]][miss_idx], na.rm = TRUE)
+    
+        # Guard against 0 or 1 default rates (would produce -Inf/Inf)
+        ar_mv <- pmax(pmin(ar_mv, 1 - 1e-6), 1e-6)
+    
+        # Univariate logit on non-missing cases
+        uni_dat <- dat_prepared[!miss_idx, c(outcome_var, z_col)]
+        uni_fit <- glm(as.formula(paste(outcome_var, "~", z_col)),
+                       data = uni_dat, family = binomial())
+    
+        beta0 <- coef(uni_fit)[1]
+        beta1 <- coef(uni_fit)[2]
+    
+        if (is.na(beta1) || abs(beta1) < 1e-8) {
+          # Degenerate case: feature has no univariate signal → impute 0
+          replacement <- 0
         } else {
-          # Build the partial linear predictor from all OTHER predictors
-          other_vars <- setdiff(predictor_vars, mv)
-          sub_mat <- pred_mat[na_rows, other_vars, drop = FALSE]
-
-          # Replace any remaining NAs with 0 (same as sequential: unimputed
-          # variables contribute nothing to eta_partial)
-          sub_mat[is.na(sub_mat)] <- 0
-
-          other_betas <- betas[other_vars]
-          eta_partial <- as.numeric(betas["(Intercept)"] + sub_mat %*% other_betas)
-
-          imputed_vals <- (target_logit - eta_partial) / beta_mv
-          imputed_vals <- pmax(pmin(imputed_vals, z_cap), -z_cap)
-
-          pred_mat[na_rows, mv] <- imputed_vals
+          replacement <- (log(ar_mv / (1 - ar_mv)) - beta0) / beta1
         }
+    
+        # All missing rows get the same replacement value
+        dat_prepared[[z_col]][miss_idx] <- replacement
+    
+        # Back-transform to raw scale for consistency
+        if (v %in% names(scaling) && v %in% names(dat_prepared)) {
+          dat_prepared[[v]][miss_idx] <- scaling[[v]]["mean"] +
+                                          replacement * scaling[[v]]["sd"]
+        }
+    
+        cat(sprintf("  %s: %d NAs → Ersatzwert = %.4f (AR_MV = %.4f)\n",
+                    z_col, sum(miss_idx), replacement, ar_mv))
       }
 
-      # Write imputed z-scores back to data.frame
-      for (mv in predictor_vars) {
-        dat_prepared[[mv]] <- pred_mat[, mv]
-
-        # Write back raw variable for consistency with rescaling step
-        raw_var <- sub("_z$", "", mv)
-        if (raw_var %in% names(scaling) && raw_var %in% names(dat_prepared)) {
-          dat_prepared[[raw_var]] <- scaling[[raw_var]]["mean"] +
-                                     pred_mat[, mv] * scaling[[raw_var]]["sd"]
-        }
-      }
-
-      incomplete_count <- sum(!complete_idx & !is.na(dat_prepared[[outcome_var]]))
-      cat(sprintf("[%s] Regression-based imputation: %d rows (%.1f%%) | %d cells imputed\n",
-                  label,
-                  incomplete_count, 100 * incomplete_count / nrow(dat_prepared),
-                  n_missing_cells_pre))
-      cat(sprintf("  Target PD: %.4f (logit: %.3f) | Complete cases for fit: %d\n",
-            target_p, target_logit, n_complete))
+  cat(sprintf("[%s] RR univariate imputation complete | %d cells imputed\n",
+              label, n_missing_cells_pre))
       
     } else if (method == "median") {
       
@@ -1727,34 +1681,33 @@ prepare_for_modeling <- function(dat, scaling, method = "regression",
 
 ```
 
-Fixing the data: with the default method of regression (? what do you
-call it) imputation
+Fixing the data: with the default method of Ersatzwert imputation, then median, then MICE
 
 ```{r}
 
 # ── Prepare all impaired datasets for modeling ─────────────────────────────
 
-# Missingness conditions: impute NAs using the default regression technique + recompute z-scores
+# Missingness conditions: impute NAs using the default ersatzwert technique + recompute z-scores
 
-dat_mcar_mild_prepped   <- prepare_for_modeling(dat_mcar_mild, result$scaling, method = "regression", model_formula = pd_formula)
-dat_mcar_severe_prepped <- prepare_for_modeling(dat_mcar_severe, result$scaling, method = "regression", model_formula = pd_formula)
-dat_mar_mild_prepped    <- prepare_for_modeling(dat_mar_mild, result$scaling, method = "regression", model_formula = pd_formula)
-dat_mar_severe_prepped  <- prepare_for_modeling(dat_mar_severe, result$scaling, method = "regression", model_formula = pd_formula)
-dat_mnar_mild_prepped   <- prepare_for_modeling(dat_mnar_mild, result$scaling, method = "regression", model_formula = pd_formula)
-dat_mnar_severe_prepped <- prepare_for_modeling(dat_mnar_severe, result$scaling, method = "regression", model_formula = pd_formula)
+dat_mcar_mild_prepped   <- prepare_for_modeling(dat_mcar_mild, result$scaling, method = "ersatzwert", model_formula = pd_formula)
+dat_mcar_severe_prepped <- prepare_for_modeling(dat_mcar_severe, result$scaling, method = "ersatzwert", model_formula = pd_formula)
+dat_mar_mild_prepped    <- prepare_for_modeling(dat_mar_mild, result$scaling, method = "ersatzwert", model_formula = pd_formula)
+dat_mar_severe_prepped  <- prepare_for_modeling(dat_mar_severe, result$scaling, method = "ersatzwert", model_formula = pd_formula)
+dat_mnar_mild_prepped   <- prepare_for_modeling(dat_mnar_mild, result$scaling, method = "ersatzwert", model_formula = pd_formula)
+dat_mnar_severe_prepped <- prepare_for_modeling(dat_mnar_severe, result$scaling, method = "ersatzwert", model_formula = pd_formula)
 
 # Noise and implausible: implaus values are turned to NAs, then imputation
 
-dat_noise_mild_prepped   <- prepare_for_modeling(dat_noise_mild, result$scaling, method = "regression", model_formula = pd_formula)
-dat_noise_severe_prepped <- prepare_for_modeling(dat_noise_severe, result$scaling, method = "regression", model_formula = pd_formula)
-dat_impl_mild_prepped    <- prepare_for_modeling(dat_impl_mild, result$scaling, method = "regression", model_formula = pd_formula)
-dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe, result$scaling, method = "regression", model_formula = pd_formula)
+dat_noise_mild_prepped   <- prepare_for_modeling(dat_noise_mild, result$scaling, method = "ersatzwert", model_formula = pd_formula)
+dat_noise_severe_prepped <- prepare_for_modeling(dat_noise_severe, result$scaling, method = "ersatzwert", model_formula = pd_formula)
+dat_impl_mild_prepped    <- prepare_for_modeling(dat_impl_mild, result$scaling, method = "ersatzwert", model_formula = pd_formula)
+dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe, result$scaling, method = "ersatzwert", model_formula = pd_formula)
 
 
 
 ```
 
-**Sidequest 1: what happens if we use median or mice?**
+
 
 ```{r}
 # Missingness conditions fixed with MEDIAN imputation: impute NAs + recompute z-scores
@@ -1777,11 +1730,10 @@ dat_mnar_severe_prepped_mice <- prepare_for_modeling(dat_mnar_severe, result$sca
 
 ```
 
-Last thing before modeling: Comparing FRS across imputation methods for
-missingness
+
 
 ```{r}
-prep_regr_list <- list(
+prep_ersatz_list <- list(
   mcar_mild    = dat_mcar_mild_prepped,
   mcar_severe  = dat_mcar_severe_prepped,
   mar_mild     = dat_mar_mild_prepped,
@@ -1795,8 +1747,9 @@ prep_regr_list <- list(
 )
 ```
 
-
+**Sidequest 1: what happens if we use median or mice?**
 Sidequest 1: Imputation Test
+
 
 ```{r}
 source("05_sidequest1_imputation_x_models.R")
@@ -1809,12 +1762,11 @@ missingness
 
 ```{r}
 frs_compare <- compare_frs_imputation(
-  dat, impaired_list, prep_regr_list,
+  dat, impaired_list, prep_ersatz_list,
   median_full, mice_full,
   result$winsor_bounds, result$plausibility_bounds
 )
 frs_compare
-
 
 
 ```
@@ -1839,7 +1791,7 @@ ggplot(frs_summary, aes(x = stage, y = frs, fill = stage)) +
   coord_cartesian(ylim = c(0.90, 1.005)) +
   scale_fill_manual(values = c(clean      = "grey70",
                                impaired   = "#e74c3c",
-                               regression = "#3498db",
+                               ersatzwert = "#3498db",
                                median     = "#f39c12",
                                mice       = "#2ecc71")) +
   labs(title    = "FRS Recovery by Imputation Method",
@@ -1870,7 +1822,7 @@ ggplot(frs_comp_summary[frs_comp_summary$severity == "severe", ],
   facet_grid(component ~ type) +
   scale_fill_manual(values = c(clean      = "grey70",
                                impaired   = "#e74c3c",
-                               regression = "#3498db",
+                               ersatzwert = "#3498db",
                                median     = "#f39c12",
                                mice       = "#2ecc71")) +
   labs(title    = "FRS Components: Severe Impairment",
@@ -1884,6 +1836,7 @@ ggplot(frs_comp_summary[frs_comp_summary$severity == "severe", ],
 
 ```
 
+FRS visualizations per variable
 
 ```{r}
 # Filter to severe + drop the aggregate MEAN row
@@ -1931,7 +1884,7 @@ frs_comp_var <- frs_compare %>%
   )
 
 frs_comp_var$stage <- factor(frs_comp_var$stage,
-                             levels = c("impaired", "regression", "median", "mice"))
+                             levels = c("impaired", "ersatzwert", "median", "mice"))
 
 ggplot(frs_comp_var,
        aes(x = stage, y = score, fill = stage)) +
@@ -1940,7 +1893,7 @@ ggplot(frs_comp_var,
   facet_grid(component ~ var) +
   coord_cartesian(ylim = c(0.80, 1.02)) +
   scale_fill_manual(values = c(impaired   = "#e74c3c",
-                               regression = "#3498db",
+                               ersatzwert = "#3498db",
                                median     = "#f39c12",
                                mice       = "#2ecc71")) +
   labs(
@@ -1999,14 +1952,14 @@ Each fit stores:
     silently carrying a bad fit forward
 
 Running it on all conditions -- raw impaired data (impaired_list) and
-regression-imputed prepared data (prep_regr_list):
+ersatzwert-imputed prepared data (prep_ersatz_list):
 
 ```{r}
 
 glm_results <- fit_logistic_models(
   clean_data    = dat,
   impaired_list = impaired_list,
-  prepared_list = prep_regr_list,
+  prepared_list = prep_ersatz_list,
   formula       = pd_formula,
   true_betas    = result$true_betas
 )
@@ -2099,118 +2052,6 @@ Key structural differences from glm that matter here:
     standard for binary credit risk: shallow trees, moderate learning
     rate, early stopping to avoid overfitting. 
 
-```{r, warning=FALSE, message=FALSE}
-
-
-# ── Fit XGBoost across all conditions ──────────────────────────────────
-
-fit_xgboost_models <- function(clean_data,
-                               impaired_list,
-                               prepared_list,
-                               formula,
-                               true_betas = NULL,
-                               # ── Hyperparameters (fixed across all conditions) ──
-                               params = list(
-                                 objective        = "binary:logistic",
-                                 eval_metric      = "logloss",
-                                 max_depth        = 3,
-                                 eta              = 0.1,
-                                 subsample        = 0.8, # Adding randomness by not always using full sample / cols
-                                 colsample_bytree = 0.8,
-                                 min_child_weight = 5
-                               ),
-                               nrounds          = 500,
-                               early_stopping   = 30,
-                               seed             = 21) {
-
-  # Extract predictor names and response from the formula
-  response   <- all.vars(formula)[1]
-  predictors <- all.vars(formula)[-1]
-
-  # Build the master list: clean + impaired + prepared
-  master <- list()
-  master[["clean"]] <- list(stage = "clean", data = clean_data)
-
-  for (nm in names(impaired_list)) {
-    master[[paste0("imp_", nm)]] <- list(stage = "impaired", data = impaired_list[[nm]])
-  }
-  for (nm in names(prepared_list)) {
-    master[[paste0("prep_", nm)]] <- list(stage = "prepared", data = prepared_list[[nm]])
-  }
-
-  # Pre-allocate storage
-  models     <- vector("list", length(master))
-  importance <- vector("list", length(master))
-  names(models) <- names(importance) <- names(master)
-
-  for (key in names(master)) {
-
-    d     <- master[[key]]$data
-    stage <- master[[key]]$stage
-
-    # Build xgb.DMatrix -- XGBoost accepts NA natively in the matrix
-    X <- as.matrix(d[, predictors, drop = FALSE])
-    y <- d[[response]]
-
-    dtrain <- xgb.DMatrix(data = X, label = y)
-
-    # Train with early stopping using the training set as evals (watchlist).
-    # In a single-run simulation (not CV), this prevents gross overfitting
-    # while keeping the pipeline simple. The evaluation story comes later
-    # with out-of-sample prediction on clean holdout data.
-    set.seed(seed)
-    fit <- xgb.train(
-      params    = params,
-      data      = dtrain,
-      nrounds   = nrounds,
-      evals =  list(train = dtrain),
-      early_stopping_rounds = early_stopping,
-      verbose   = 0
-    )
-
-    models[[key]] <- fit
-
-    # Feature importance (gain-based)
-    imp <- xgb.importance(model = fit)
-
-    # Ensure all predictors appear even if importance is zero
-    imp_full <- data.frame(
-      key       = key,
-      stage     = stage,
-      condition = ifelse(stage == "clean", "clean",
-                         sub("^imp_|^prep_", "", key)),
-      Feature   = predictors,
-      stringsAsFactors = FALSE
-    )
-    imp_full <- merge(imp_full, imp[, c("Feature", "Gain", "Cover", "Frequency")],
-                      by = "Feature", all.x = TRUE)
-    imp_full[is.na(imp_full)] <- 0
-
-    importance[[key]] <- imp_full
-  }
-
-  # Stack importance tables
-  importance_df <- do.call(rbind, importance)
-  rownames(importance_df) <- NULL
-
-  # Parse condition into type + severity
-  importance_df$type <- ifelse(
-    importance_df$condition == "clean", "clean",
-    sub("_mild$|_severe$", "", importance_df$condition)
-  )
-  importance_df$severity <- ifelse(
-    importance_df$condition == "clean", "none",
-    ifelse(grepl("severe", importance_df$condition), "severe", "mild")
-  )
-
-  list(
-    models     = models,         # named list of xgb.Booster objects
-    importance = importance_df   # long-format data.frame
-  )
-}
-
-```
-
 Running it:
 
 ```{r}
@@ -2218,7 +2059,7 @@ Running it:
 xgb_results <- fit_xgboost_models(
   clean_data    = dat,
   impaired_list = impaired_list,
-  prepared_list = prep_regr_list,
+  prepared_list = prep_ersatz_list,
   formula       = pd_formula
 )
 
@@ -2399,8 +2240,8 @@ all_datasets <- c(
     paste0("imp_", names(impaired_list))
   ),
   setNames(
-    lapply(names(prep_regr_list), function(nm) prep_regr_list[[nm]]),
-    paste0("prep_", names(prep_regr_list))
+    lapply(names(prep_ersatz_list), function(nm) prep_ersatz_list[[nm]]),
+    paste0("prep_", names(prep_ersatz_list))
   )
 )
 
@@ -2537,7 +2378,7 @@ ggplot(xgb_grade_dist,
 
 ```
 
-#### if we know exactly who defaulted vs. not via the DGP, can we add another bar for perfect world...?
+
 
 # **Stage 5: Evaluation Metrics**
 
@@ -2781,7 +2622,7 @@ GINI / DISCRIMINATION NOTES:
 
 - XGBoost clean baseline (~0.675) meaningfully outperforms GLM (~0.60) due to its ability to capture nonlinearities in the DGP
 GLM is surprisingly robust across missingness conditions — complete-case deletion preserves clean relationships on smaller but undistorted data
-- Preparation (regression imputation) generally hurts discrimination relative to native NA handling, especially for XGBoost under MCAR, because imputed values compress the feature distribution and dull split quality
+- Preparation (ersatzwert imputation) 
 - Noise is where GLM shows more robustness than XGBoost relative to their own baselines, but XGBoost at its worst still beats GLM's clean ceiling
 - Implausible values hit both models hardest on discrimination
 
@@ -2834,7 +2675,7 @@ Brier score (discrimination + calibration combined)
 - GLM complete-case analysis holds calibration well until noise severe and implausible conditions, where it jumps sharply
 For XGBoost, impaired and prepared are nearly identical across most conditions — degradation is driven by the information loss itself, not the repair strategy
 - MAR is the most stable condition for both models, consistent with the mechanism (missingness on crefo is independent of default risk conditional on observables)
-- MNAR prepared takes a hit in GLM because regression imputation pulls the missing interest_cov tail toward the center, underestimating risk for the most distressed firms
+- MNAR prepared takes a hit in GLM because ersatzwert imputation pulls the missing interest_cov tail toward the center, underestimating risk for the most distressed firms
 
 
 
@@ -2867,12 +2708,9 @@ ggplot(plot_metrics, aes(x = condition, y = oe_ratio,
 
 Notes O/E ratio (pure calibration):
 
-- This is where preparation actually helps — it recovers aggregate calibration even when it hurts discrimination (why? )
+- How can preparation undermine GLM so much?
 - MNAR severe is the standout: GLM impaired underpredicts by ~15% (O/E ≈ 1.15), preparation recovers roughly half of that
 Noise and implausible values look stable on O/E despite degraded Gini — this is the dangerous pattern where a supervisor checking only aggregate calibration would miss the problem
-- MCAR preparation makes GLM overpredict slightly (O/E < 1.0) — conservative but costly
-
-
 
 
 
@@ -3031,7 +2869,15 @@ ggplot(cal_plot_data,
 Calibration plot (grade-level calibration) (re-do)
 
 - Grade-level calibration mostly holds across conditions, confirming that the O/E stability isn't just offsetting errors across grades
-- Main vulnerability is in the highest-PD grades, where regression imputation compresses the tail and underpredicts risk for the riskiest firms
+- Main vulnerability is in the highest-PD grades, where ersatzwert imputation compresses the tail and underpredicts risk for the riskiest firms
+
+
+
+```{r}
+vars <- c("log_assets", "debt_to_equity", "interest_cov", "firm_age", "crefo")
+sapply(paste0(vars, "_z"), function(v) median(dat[[v]], na.rm = TRUE))
+```
+
 
 
 ### Summary: degradation at a glance

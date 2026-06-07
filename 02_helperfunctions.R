@@ -547,7 +547,7 @@ print_frs <- function(frs_df, digits = 3) {
 #
 # Builds a stacked FRS data frame with three stages per condition:
 #   - impaired: after missingness is applied, before any imputation
-#   - regression: after regression imputation
+#   - ersatzwert: after ersatzwert imputation
 #   - median:   after median imputation
 #   - mice:     after MICE imputation
 #
@@ -556,7 +556,7 @@ print_frs <- function(frs_df, digits = 3) {
 # ============================================================================
 
 compare_frs_imputation <- function(dat_clean, impaired_list,
-                                   regr_list, median_list, mice_list,
+                                   ersatz_list, median_list, mice_list,
                                    winsor_bounds, plausibility_bounds) {
   
   frs_clean <- compute_frs(dat_clean, winsor_bounds = winsor_bounds,
@@ -587,7 +587,7 @@ compare_frs_imputation <- function(dat_clean, impaired_list,
   }
   
   add_stage(impaired_list, "impaired")
-  add_stage(regr_list, "regression")
+  add_stage(ersatz_list, "ersatzwert")
   add_stage(median_list,   "median")
   add_stage(mice_list,     "mice")
   
@@ -595,7 +595,7 @@ compare_frs_imputation <- function(dat_clean, impaired_list,
   rownames(out) <- NULL
   
   out$stage <- factor(out$stage,
-                      levels = c("clean", "impaired", "regression", "median", "mice"))
+                      levels = c("clean", "impaired", "ersatzwert", "median", "mice"))
   out
 }
 
@@ -687,3 +687,115 @@ fit_logistic_models <- function(clean_data,
 }
 
 
+
+
+# ============================================================================
+# Function 5: Fit xgboost models
+# ============================================================================
+
+# ── Fit XGBoost across all conditions ──────────────────────────────────
+
+fit_xgboost_models <- function(clean_data,
+                               impaired_list,
+                               prepared_list,
+                               formula,
+                               true_betas = NULL,
+                               # ── Hyperparameters (fixed across all conditions) ──
+                               params = list(
+                                 objective        = "binary:logistic",
+                                 eval_metric      = "logloss",
+                                 max_depth        = 3,
+                                 eta              = 0.1,
+                                 subsample        = 0.8, # Adding randomness by not always using full sample / cols
+                                 colsample_bytree = 0.8,
+                                 min_child_weight = 5
+                               ),
+                               nrounds          = 500,
+                               early_stopping   = 30,
+                               seed             = 21) {
+  
+  # Extract predictor names and response from the formula
+  response   <- all.vars(formula)[1]
+  predictors <- all.vars(formula)[-1]
+  
+  # Build the master list: clean + impaired + prepared
+  master <- list()
+  master[["clean"]] <- list(stage = "clean", data = clean_data)
+  
+  for (nm in names(impaired_list)) {
+    master[[paste0("imp_", nm)]] <- list(stage = "impaired", data = impaired_list[[nm]])
+  }
+  for (nm in names(prepared_list)) {
+    master[[paste0("prep_", nm)]] <- list(stage = "prepared", data = prepared_list[[nm]])
+  }
+  
+  # Pre-allocate storage
+  models     <- vector("list", length(master))
+  importance <- vector("list", length(master))
+  names(models) <- names(importance) <- names(master)
+  
+  for (key in names(master)) {
+    
+    d     <- master[[key]]$data
+    stage <- master[[key]]$stage
+    
+    # Build xgb.DMatrix -- XGBoost accepts NA natively in the matrix
+    X <- as.matrix(d[, predictors, drop = FALSE])
+    y <- d[[response]]
+    
+    dtrain <- xgb.DMatrix(data = X, label = y)
+    
+    # Train with early stopping using the training set as evals (watchlist).
+    # In a single-run simulation (not CV), this prevents gross overfitting
+    # while keeping the pipeline simple. The evaluation story comes later
+    # with out-of-sample prediction on clean holdout data.
+    set.seed(seed)
+    fit <- xgb.train(
+      params    = params,
+      data      = dtrain,
+      nrounds   = nrounds,
+      evals =  list(train = dtrain),
+      early_stopping_rounds = early_stopping,
+      verbose   = 0
+    )
+    
+    models[[key]] <- fit
+    
+    # Feature importance (gain-based)
+    imp <- xgb.importance(model = fit)
+    
+    # Ensure all predictors appear even if importance is zero
+    imp_full <- data.frame(
+      key       = key,
+      stage     = stage,
+      condition = ifelse(stage == "clean", "clean",
+                         sub("^imp_|^prep_", "", key)),
+      Feature   = predictors,
+      stringsAsFactors = FALSE
+    )
+    imp_full <- merge(imp_full, imp[, c("Feature", "Gain", "Cover", "Frequency")],
+                      by = "Feature", all.x = TRUE)
+    imp_full[is.na(imp_full)] <- 0
+    
+    importance[[key]] <- imp_full
+  }
+  
+  # Stack importance tables
+  importance_df <- do.call(rbind, importance)
+  rownames(importance_df) <- NULL
+  
+  # Parse condition into type + severity
+  importance_df$type <- ifelse(
+    importance_df$condition == "clean", "clean",
+    sub("_mild$|_severe$", "", importance_df$condition)
+  )
+  importance_df$severity <- ifelse(
+    importance_df$condition == "clean", "none",
+    ifelse(grepl("severe", importance_df$condition), "severe", "mild")
+  )
+  
+  list(
+    models     = models,         # named list of xgb.Booster objects
+    importance = importance_df   # long-format data.frame
+  )
+}

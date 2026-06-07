@@ -1,14 +1,29 @@
-# ============================================================================
-# 04 Checks and visualizations
-# ============================================================================
+---
+title: "Extra Visualizations and Checks"
+output: html_document
+date: "2026-06-07"
+---
 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
 
+## Extra Checks and Visualizations
 
-
-# ── Default Rate by Year: RR-style dual-axis chart ──────────────────
-
+```{r}
 library(ggplot2)
 library(dplyr)
+
+```
+
+
+### Phase 1: DGP-related charts
+
+1) Default rate per year
+
+
+```{r}
+
 
 # ── Aggregate by observation year ────────────────────────────────────
 year_stats <- dat %>%
@@ -62,6 +77,9 @@ ggplot(year_stats, aes(x = obs_year)) +
 # ── Optional: print the table too ───────────────────────────────────
 cat("\n── Year-level summary ──\n")
 print(year_stats, n = 30)
+
+```
+
 
 
 

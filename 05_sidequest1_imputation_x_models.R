@@ -4,7 +4,7 @@
 
 # SQ1: Does the imputation method matter for coefficient recovery?
 #
-# Compares three imputation strategies — RR regression, median, and MICE —
+# Compares three imputation strategies — RR ersatzwert, median, and MICE —
 # on their ability to recover the DGP's true betas after logistic regression.
 #
 # Scope: All 10 impairment conditions (5 types × 2 severities).
@@ -22,7 +22,7 @@
 #   - result            (DGP output list: $scaling, $true_betas, etc.)
 #   - pd_formula        (model formula)
 #   - impaired_list     (named list of all 10 impaired datasets)
-#   - prep_regr_list    (regression-imputed prepared datasets, all 10)
+#   - prep_ersatz_list    (ersatzwert-imputed prepared datasets, all 10)
 #   - prepare_for_modeling()  (from the main Rmd)
 #   - fit_logistic_models()   (from the main Rmd)
 #
@@ -41,7 +41,7 @@ library(tidyr)
 # ============================================================================
 # STEP 0: Ensure all 10 conditions have median and MICE prepared datasets
 # ============================================================================
-# The main walkthrough prepares all 10 conditions under regression, but
+# The main walkthrough prepares all 10 conditions under ersatzwert, but
 # only the 6 missingness conditions under median and MICE. Here we fill
 # in the gaps: noise and implausible conditions get prepared with median
 # and MICE so the comparison covers the full grid.
@@ -97,12 +97,12 @@ if (length(missing_from_mice) > 0) {
   }
 }
 
-# --- Regression list is already complete from the walkthrough ---------------
-regr_full <- prep_regr_list[all_conditions]
+# --- Ersatzwert list is already complete from the walkthrough ---------------
+ersatz_full <- prep_ersatz_list[all_conditions]
 
 # Sanity check: all three prepared lists cover all 10 conditions
 stopifnot(
-  all(all_conditions %in% names(regr_full)),
+  all(all_conditions %in% names(ersatz_full)),
   all(all_conditions %in% names(median_full)),
   all(all_conditions %in% names(mice_full))
 )
@@ -119,11 +119,11 @@ cat("SQ1: Comparing imputation methods across", length(all_conditions),
 # NAs → glm does complete-case analysis). The "clean" baseline also stays
 # the same — it's the shared reference point.
 
-cat("\n--- Fitting models: Regression imputation ---\n")
-glm_regr <- fit_logistic_models(
+cat("\n--- Fitting models: ersatzwert imputation ---\n")
+glm_ersatz <- fit_logistic_models(
   clean_data    = dat,
   impaired_list = impaired_list,
-  prepared_list = regr_full,
+  prepared_list = ersatz_full,
   formula       = pd_formula,
   true_betas    = result$true_betas
 )
@@ -159,16 +159,16 @@ tag_method <- function(coef_df, method_label) {
   coef_df
 }
 
-coef_regr   <- tag_method(glm_regr$coef_recovery,   "regression")
+coef_ersatz   <- tag_method(glm_ersatz$coef_recovery,   "ersatzwert")
 coef_median <- tag_method(glm_median$coef_recovery,  "median")
 coef_mice   <- tag_method(glm_mice$coef_recovery,    "mice")
 
 # The clean + impaired rows are identical across all three calls.
-# Keep them once (from the regression run), then append the three
+# Keep them once (from the ersatzwert run), then append the three
 # sets of prepared rows.
-baseline_rows <- coef_regr[coef_regr$stage %in% c("clean", "impaired"), ]
+baseline_rows <- coef_ersatz[coef_ersatz$stage %in% c("clean", "impaired"), ]
 prepared_rows <- rbind(
-  coef_regr[coef_regr$stage == "prepared", ],
+  coef_ersatz[coef_ersatz$stage == "prepared", ],
   coef_median[coef_median$stage == "prepared", ],
   coef_mice[coef_mice$stage == "prepared", ]
 )
@@ -179,7 +179,7 @@ rownames(sq1_coefs) <- NULL
 # Factor ordering for plots
 sq1_coefs$method <- factor(sq1_coefs$method,
                            levels = c("clean", "impaired",
-                                      "regression", "median", "mice"))
+                                      "ersatzwert", "median", "mice"))
 
 sq1_coefs$condition <- factor(sq1_coefs$condition,
                               levels = c("clean", all_conditions))
@@ -258,12 +258,12 @@ p1 <- ggplot(sq1_plot_data,
   facet_wrap(~ term, scales = "free_x", ncol = 4) +
   scale_colour_manual(
     values = c(impaired   = "#e74c3c",
-               regression = "#3498db",
+               ersatzwert = "#3498db",
                median     = "#f39c12",
                mice       = "#2ecc71")
   ) +
   scale_shape_manual(
-    values = c(impaired = 16, regression = 15, median = 17, mice = 18)
+    values = c(impaired = 16, ersatzwert = 15, median = 17, mice = 18)
   ) +
   labs(
     title    = "SQ1: Coefficient Recovery by Imputation Method",
@@ -291,7 +291,7 @@ p2 <- ggplot(sq1_by_mechanism,
   geom_text(aes(label = round(mean_abs_diff, 4)), vjust = -0.5, size = 2.5) +
   facet_grid(severity ~ type) +
   scale_fill_manual(
-    values = c(regression = "#3498db", median = "#f39c12", mice = "#2ecc71")
+    values = c(ersatzwert = "#3498db", median = "#f39c12", mice = "#2ecc71")
   ) +
   labs(
     title    = "SQ1: Mean Absolute Beta Deviation by Mechanism × Method",
@@ -334,14 +334,14 @@ print(p3)
 # ============================================================================
 
 # --- 6a. MAR-severe -------------------------------------------------------
-# Regression imputation inflates collinearity between crefo and
+# Ersatzwert imputation inflates collinearity between crefo and
 # debt_to_equity because it uses the model's covariate structure to
 # impute crefo. Does median or MICE sidestep this?
 
 cat("\n=== SQ1: MAR-Severe Beta Recovery (detailed) ===\n")
 mar_severe_detail <- sq1_coefs %>%
   filter(condition == "mar_severe",
-         method %in% c("regression", "median", "mice")) %>%
+         method %in% c("ersatzwert", "median", "mice")) %>%
   select(method, term, true, estimated, diff, abs_diff) %>%
   arrange(term, method)
 
@@ -356,7 +356,7 @@ print(as.data.frame(mar_severe_detail), row.names = FALSE)
 cat("\n=== SQ1: Implausible-Severe Beta Recovery (detailed) ===\n")
 impl_severe_detail <- sq1_coefs %>%
   filter(condition == "impl_severe",
-         method %in% c("regression", "median", "mice")) %>%
+         method %in% c("ersatzwert", "median", "mice")) %>%
   select(method, term, true, estimated, diff, abs_diff) %>%
   arrange(term, method)
 
