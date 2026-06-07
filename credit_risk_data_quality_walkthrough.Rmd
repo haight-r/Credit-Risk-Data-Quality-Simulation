@@ -72,22 +72,22 @@ f)  **Crefo score**. (see below) Dependent on most things above.
 This is the "ground truth" -- can be confirmed from RR All are
 standardized (change in log-odds per 1 SD increase)
 
-beta0 <- -3.9 this is the intercept -- should be whatever the log odds
+- beta0 <- -3.9 this is the intercept -- should be whatever the log odds
 of the default rate is 
 
-beta_log_assets <- -0.2 larger firms less likely to default 
+- beta_log_assets <- -0.2 larger firms less likely to default 
 
-beta_debt_to_equity <- 0.4 higher leverage = higher risk
+- beta_debt_to_equity <- 0.4 higher leverage = higher risk
 
-beta_interest_cov <- -0.3 higher coverage of interest expenses = lower risk 
+- beta_interest_cov <- -0.3 higher coverage of interest expenses = lower risk 
 
-beta_sector2 <- 0.4 gastro is the riskiest sector 
+- beta_sector2 <- 0.4 gastro is the riskiest sector 
 
-beta_sector3 <- 0.18 manufacturing slightly riskier 
+- beta_sector3 <- 0.18 manufacturing slightly riskier 
 
-beta_firm_age <- -0.1 older firms slightly safer 
+- beta_firm_age <- -0.1 older firms slightly safer 
 
-beta_crefo <- 0.3 higher Crefo score → higher default risk
+- beta_crefo <- 0.3 higher Crefo score → higher default risk
 
 ------------------------------------------------------------------------
 
@@ -1178,238 +1178,16 @@ dat_impl_severe <- impair_implausible(dat, result$scaling, severity = "severe")
 
 ```
 
-------------------------------------------------------------------------
 
-### Function Checks Before Impairment / Modeling
-
-```{r}
-
-# ── DGP Checks ────────────────────────────────
-
-# Do deteriorating firms actually have rising debt-equity and falling interest coverage over time?
-det_firms <- dat[dat$trajectory == "deteriorating", ]
-cat("Deteriorating firms — mean dte year 1:", 
-    round(mean(det_firms$debt_to_equity[det_firms$years_on_book == 1]), 3), "\n")
-cat("Deteriorating firms — mean dte year 3+:", 
-    round(mean(det_firms$debt_to_equity[det_firms$years_on_book >= 3]), 3), "\n")
-cat("Deteriorating firms — mean ic year 1:", 
-    round(mean(det_firms$interest_cov[det_firms$years_on_book == 1]), 3), "\n")
-cat("Deteriorating firms — mean ic year 3+:", 
-    round(mean(det_firms$interest_cov[det_firms$years_on_book >= 3]), 3), "\n")
-
-
-# ── Are sector rates / trends accurate? ────────────────────────────────
-
-# Overall sector default rates (firm-year level)
-cat("Default rates per sector (1: services / 2: gastro / 3: manufacturing):\n", 
-    tapply(dat$default, dat$sector, mean), "\n",
-    "Target: sector 1 ≈ 0.020, sector 2 ≈ 0.036, sector 3 ≈ 0.023\n")
-
-# Gastro trend over time
-cat("Over-time default rate increases for Gastro per year (note low base on the tails):\n", 
-    round(tapply(dat$default[dat$sector == 2], dat$obs_year[dat$sector == 2], mean), 3), "\n")
-
-
-
-
-```
-
-```{r}
-# ── All Impairment Functions ────────────────────────────────
-
-# Assumes the following objects exist in your environment:
-# dat                                        (clean data)
-# dat_mcar_mild,    dat_mcar_severe
-# dat_mnar_mild,    dat_mnar_severe
-# dat_noise_mild,   dat_noise_severe
-# dat_impl_mild,    dat_impl_severe
-
-
-# ── 1. Missing rates (MCAR MAR & MNAR) ────────────────────────────────────────
-
-# Within the expected column! E.g. MAR only for CREFO, MNAR only for Interest Coverage
-
-cat("=== Missing Rates ===\n")
-cat("MCAR mild:  ", round(mean(is.na(dat_mcar_mild$interest_cov)), 3),  "\n")
-cat("MCAR severe:", round(mean(is.na(dat_mcar_severe$interest_cov)), 3), "\n")
-cat("MAR mild:  ", round(mean(is.na(dat_mar_mild$crefo)), 3),  "\n")
-cat("MAR severe:", round(mean(is.na(dat_mar_severe$crefo)), 3), "\n")
-cat("MNAR mild:  ", round(mean(is.na(dat_mnar_mild$interest_cov)), 3),  "\n")
-cat("MNAR severe:", round(mean(is.na(dat_mnar_severe$interest_cov)), 3), "\n")
-
-
-```
-
-```{r}
-
-# ──  2. MNAR getting worse by int_cov quartile ─────────────────────────
-cat("\n=== MNAR: Missing Rate by Interest Coverage Quartile ===\n")
-ic_bins <- cut(dat$interest_cov, breaks = 4)
-
-cat("Mild:\n")
-print(round(tapply(is.na(dat_mnar_mild$interest_cov), ic_bins, mean), 3))
-
-cat("Severe:\n")
-print(round(tapply(is.na(dat_mnar_severe$interest_cov), ic_bins, mean), 3))
-
-```
-
-```{r}
-# ── 3. Noise inflated SD ──────────────────────────────────────────────────
-
-cat("\n=== Noise: SD Before and After ===\n")
-noise_vars <- c("log_assets", "debt_to_equity", "interest_cov")
-
-for (v in noise_vars) {
-  cat(sprintf("%-20s clean SD: %.4f | mild SD: %.4f | severe SD: %.4f\n",
-    v,
-    sd(dat[[v]]),
-    sd(dat_noise_mild[[v]]),
-    sd(dat_noise_severe[[v]])
-  ))
-}
-```
-
-```{r}
-
-# ── 4. Implausible values are present ─────────────────────────────────────
-
-cat("\n=== Implausible: Range Summary of Affected Variables ===\n")
-impl_vars <- c("log_assets", "debt_to_equity", "interest_cov", "firm_age")
-
-for (v in impl_vars) {
-  cat(sprintf("\n%s:\n", v))
-  cat("  mild:   min =", round(min(dat_impl_mild[[v]]),  2),
-              " max =", round(max(dat_impl_mild[[v]]),  2), "\n")
-  cat("  severe: min =", round(min(dat_impl_severe[[v]]), 2),
-              " max =", round(max(dat_impl_severe[[v]]), 2), "\n")
-}
-
-# Domain-invalid checks
-cat("\nDomain violations (proportion of rows):\n")
-cat("  Negative debt_to_equity — mild:", round(mean(dat_impl_mild$debt_to_equity   < 0), 3),
-                                "| severe:", round(mean(dat_impl_severe$debt_to_equity  < 0), 3), "\n")
-cat("  Negative firm_age       — mild:", round(mean(dat_impl_mild$firm_age          < 0), 3),
-                                "| severe:", round(mean(dat_impl_severe$firm_age         < 0), 3), "\n")
-
-
-```
-
-```{r}
-# ── 5a. Visual distributions: Noise ───────────────────────────────────────
-
-par(mfrow = c(3, 3), mar = c(4, 4, 2, 1))
-
-for (v in c("log_assets", "debt_to_equity", "interest_cov")) {
-  hist(dat[[v]],             main = paste("Clean -", v),        xlab = v, col = "grey90")
-  hist(dat_noise_mild[[v]],  main = paste("Noise mild -", v),   xlab = v, col = "lightblue")
-  hist(dat_noise_severe[[v]], main = paste("Noise severe -", v), xlab = v, col = "steelblue")
-}
-
-# ── 5b. Visual distributions: Implausible ─────────────────────────────────
-
-par(mfrow = c(1, 3), mar = c(5, 4, 3, 1), oma = c(0, 0, 3, 0))
-for (v in c("log_assets", "debt_to_equity", "interest_cov")) {
-  boxplot(
-    dat[[v]], dat_impl_mild[[v]], dat_impl_severe[[v]],
-    names   = c("Clean", "Mild", "Severe"),
-    main    = v,
-    col     = c("grey80", "lightyellow", "orange"),
-    outline = TRUE,
-    las     = 2
-  )
-}
-mtext("Implausible Values Impairment: Distribution by Severity", 
-      outer = TRUE, cex = 1.1, font = 2, line = 1)
-```
-
-```{r}
-# ── 6. Metadata tags ──────────────────────────────────────────────────────
-
-cat("\n=== Metadata Tags ===\n")
-for (nm in c("dat_mcar_mild", "dat_mcar_severe",
-             "dat_mnar_mild", "dat_mnar_severe",
-             "dat_noise_mild", "dat_noise_severe",
-             "dat_impl_mild", "dat_impl_severe")) {
-  cat(nm, "→ type:", attr(get(nm), "impairment")$type,
-      "| severity:", attr(get(nm), "impairment")$severity, "\n")
-}
-```
-
-```{r}
-# ── 7. Crefo Score: Missing Rates (MAR) ───────────────────────────
-
-# crefo variable check
-cat("Mean crefo (raw):     ", round(mean(dat$crefo), 1), "\n")
-cat("SD crefo (raw):       ", round(sd(dat$crefo), 1), "\n")
-cat("Mean crefo_z:         ", round(mean(dat$crefo_z), 4), "\n")
-cat("Crefo distribution:\n")
-print(quantile(dat$crefo, probs = c(0.1, 0.25, 0.5, 0.75, 0.9)))
-
-cat("\n=== Crefo Score: Missing Rates ===\n")
-cat("MAR mild:  ", round(mean(is.na(dat_mar_mild$crefo)), 3),  "\n")
-cat("MAR severe:", round(mean(is.na(dat_mar_severe$crefo)), 3), "\n")
-
-cat("\n=== MAR: Crefo Missing Rate by Firm Age Quartile ===\n")
-age_bins <- cut(dat$firm_age, breaks = 4)
-
-cat("Mild:\n")
-print(round(tapply(is.na(dat_mar_mild$crefo), age_bins, mean), 3))
-
-cat("Severe:\n")
-print(round(tapply(is.na(dat_mar_severe$crefo), age_bins, mean), 3))
-
-
-```
-
-```{r}
-# ── 8. Crefo Score: Distribution by Sector ────────────────────────────────
-
-par(mfrow = c(1, 3), mar = c(4, 4, 3, 1))
-
-for (s in 1:3) {
-  label <- c("1 (Services)", "2 (Gastro)", "3 (Manufacturing)")[s]
-  subset <- dat$crefo[dat$sector == s]
-  hist(subset, main = paste("Crefo - Sector", label),
-       xlab = "crefo", col = c("grey90", "lightblue", "salmon")[s],
-       xlim = c(100, 600), breaks = 20)
-  abline(v = median(subset), lty = 2, lwd = 2)
-  legend("topright", legend = paste("median:", round(median(subset))),
-         bty = "n", cex = 0.9)
-}
-
-cat("\n=== Crefo Median by Sector ===\n")
-for (s in 1:3) {
-  label <- c("services", "gastro", "manufacturing")[s]
-  cat(sprintf("Sector %d (%-15s): median = %.0f, mean = %.1f\n",
-    s, label,
-    median(dat$crefo[dat$sector == s]),
-    mean(dat$crefo[dat$sector == s])
-  ))
-}
-```
-
-```{r}
-# ── 10. Crefo Missing Rate by Sector ───────────────────────────────────────
-
-cat("\n=== Crefo Missing Rate by Sector (MAR Diagnostic) ===\n")
-
-for (nm in c("dat_mar_mild", "dat_mar_severe")) {
-  d <- get(nm)
-  miss_by_sector <- tapply(is.na(d$crefo), d$sector, mean)
-  cat(sprintf("%-14s 1 (services): %.3f | 2 (gastro): %.3f | 3 (manufacturing): %.3f\n",
-    nm, miss_by_sector["1"], miss_by_sector["2"], miss_by_sector["3"]
-  ))
-}
-
-```
 
 ------------------------------------------------------------------------
 
+Sidequest 2:
 ### Feature reliability score on impaired data
 
 Here we want to look at both the overall FRS score (aggregate, geometric
-mean) along with individual FRS components for mild and severe data.
+mean) along with individual FRS components for mild and severe data before we 
+take any steps to prepare.
 
 ```{r}
 
@@ -2866,17 +2644,48 @@ ggplot(cal_plot_data,
 
 ```
 
+```{r}
+# ── Calibration deviation heatmap ──────────────────────────────────────
+library(ggplot2)
+
+# Relative deviation: positive = under-prediction, negative = over-prediction
+cal_plot_data$rel_dev <- with(cal_plot_data,
+  (obs_default_rate - mean_pred_pd) / pmax(mean_pred_pd, 1e-6)
+)
+
+# Cap for visual clarity
+cal_plot_data$rel_dev_cap <- pmin(pmax(cal_plot_data$rel_dev, -1), 1)
+
+for (mt in c("glm", "xgboost")) {
+  p <- ggplot(cal_plot_data[cal_plot_data$model_type == mt, ],
+              aes(x = facet_label, y = factor(grade), fill = rel_dev_cap)) +
+    geom_tile(colour = "white", linewidth = 0.5) +
+    scale_fill_gradient2(
+      low = "#2166ac", mid = "white", high = "#b2182b",
+      midpoint = 0, limits = c(-1, 1),
+      name = "Relative\ndeviation"
+    ) +
+    geom_text(aes(label = sprintf("%.0f%%", rel_dev * 100)),
+              size = 2.5, colour = "grey20") +
+    labs(
+      title = paste0("Calibration Deviation by Grade — ", toupper(mt)),
+      subtitle = "Blue = over-prediction (conservative) | Red = under-prediction (risky)",
+      x = NULL, y = "PD Grade"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+      panel.grid   = element_blank()
+    )
+  print(p)
+}
+```
+
+
 Calibration plot (grade-level calibration) (re-do)
 
 - Grade-level calibration mostly holds across conditions, confirming that the O/E stability isn't just offsetting errors across grades
 - Main vulnerability is in the highest-PD grades, where ersatzwert imputation compresses the tail and underpredicts risk for the riskiest firms
-
-
-
-```{r}
-vars <- c("log_assets", "debt_to_equity", "interest_cov", "firm_age", "crefo")
-sapply(paste0(vars, "_z"), function(v) median(dat[[v]], na.rm = TRUE))
-```
 
 
 
