@@ -18,7 +18,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r, warning=FALSE, message=FALSE}
 source("01_functions.R")
 
-required_packages <- c("ggplot2", "dplyr", "tidyr", "mice", "xgboost", "DiagrammeR")
+required_packages <- c("ggplot2", "dplyr", "tidyr", "mice", "xgboost", "DiagrammeR", "ggrepel")
 
 for (pkg in required_packages) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -55,8 +55,8 @@ b)  **sector**: three sectors with proportions and risk properties based
 2: **Chained regression dependencies**
 
 Each variable is determined by the one in front of it -- older firms
-tend to be larger, larger firms tend to have lower leverage Plus --
-adding randomness
+tend to be larger, larger firms tend to have lower leverage, etc., plus
+random noise.
 
 c)  **log_assets**: proxy for firm size, dependent on age and sector
 d)  **debt to equity**: higher leverage is more dangerous -- dependent
@@ -69,45 +69,39 @@ f)  **Crefo score**. (see below) Dependent on most things above.
 
 ##### **2. Choose the true coefficients that define the world**
 
-This is the "ground truth" -- can be confirmed from RR All are
-standardized (change in log-odds per 1 SD increase)
+This is the "ground truth". All are standardized (change in log-odds per 1 SD increase)
 
-- beta0 <- -3.9 this is the intercept -- should be whatever the log odds
+- **beta0 = -3.9** | this is the intercept -- should be whatever the log odds
 of the default rate is 
-
-- beta_log_assets <- -0.2 larger firms less likely to default 
-
-- beta_debt_to_equity <- 0.4 higher leverage = higher risk
-
-- beta_interest_cov <- -0.3 higher coverage of interest expenses = lower risk 
-
-- beta_sector2 <- 0.4 gastro is the riskiest sector 
-
-- beta_sector3 <- 0.18 manufacturing slightly riskier 
-
-- beta_firm_age <- -0.1 older firms slightly safer 
-
-- beta_crefo <- 0.3 higher Crefo score → higher default risk
+- **beta_log_assets = -0.2** | larger firms less likely to default 
+- **beta_debt_to_equity = 0.4** | higher leverage = higher risk
+- **beta_interest_cov = -0.3** | higher coverage of interest expenses = lower risk 
+- **beta_sector2 = 0.4** | gastro is the riskiest sector 
+- **beta_sector3 = 0.18** | manufacturing slightly riskier 
+- **beta_firm_age = -0.1** | older firms slightly safer 
+- **beta_crefo = 0.3** | higher Crefo score → higher default risk
 
 ------------------------------------------------------------------------
 
 ##### **3. Create panel data with time series component**
 
-Inner loop - creating firms that either stay the same over time, get
+**Inner loop**: creating firms that either stay the same over time, get
 worse, or improve... (drift rates); default or not during their 3-7 year
-loan periods. Crefo will sometimes refresh itself, sometimes remaining
-stale
+loan periods. 
 
-Outer loop creates lots of these firms. Then the rows are bound together
+Crefo will sometimes refresh itself, sometimes remaining stale
 
--   the "linpred" part -- weighted sum of the predictors. this is
+**Outer loop** creates lots of these firms. Then the rows are bound together
+
+-   the "linpred" -- weighted sum of the predictors. this transforms to
     logistic regression
     -   computes the log-odds of default for each borrower
 -   pd_true: then after: the logistic transformation so we get the true
     PDs and not log-odds
 
-Draw observed defaults. For each borrower, draw a default with pd_true
-value from before - borrowers can have same PDs but 2 different outcomes
+**Next: Draw observed defaults.**
+For each borrower, draw a default with pd_true value from before (weighted coin 
+flip) -- borrowers can have same PDs but 2 different outcomes
 (default or not)
 
 ------------------------------------------------------------------------
@@ -138,21 +132,18 @@ historical default rates in those sectors per practitioner datasets.
 ------------------------------------------------------------------------
 ------------------------------------------------------------------------
 
-#### Data Generating Process DAG
+### Data Generating Process DAG
 
-*1) Simple DAG for the five indicator variables)*
+**1) Simple DAG for the five indicator variables)**
 
 Color code: 
 
 - Gray `firm_age` : root variable drawn from a distribution,
 not derived from anything else 
-
 - Green `sector` : root variable like age , but continuous 
-
 - Blue `log_assets`, `debt_to_equity`,
 `interest_cov` : financial predictors derived from root vars and each
 other 
-
 - Orange `crefo`: Creditreform separate since it's a derived
 external rating that depends on all of the above (except age)
 
@@ -199,7 +190,7 @@ digraph DGP_simple {
 
 ```
 
-*2) Entire DGP*
+**2) Entire DGP**
 
 Phase one: (left) variable and dependency declaration 
 
@@ -293,10 +284,10 @@ This creates one synthetic dataset with 5000 businesses / around 20k
 rows, and tests the default rate -- should be around 2.4%.
 
 ```{r}
-######################################################################
 
-result <- simulate_clean_data_panel(N = 50000) # running with high sample size as this is the showcase document
-# sorry in advance as this is slow
+result <- simulate_clean_data_panel(N = 50000) 
+# running with high sample size as this is the showcase document
+# Monte Carlo runs with less sample but more repetitions
 
 ###################################################################
 
@@ -311,12 +302,19 @@ pd_formula <- default ~ log_assets_z + debt_to_equity_z + interest_cov_z +
 
 ```
 
-## Checkpoint: Model Fit - Perfect World
+## Checkpoint: Model Fit in the Perfect World
 
-Fitting a logistic regression: this is the baseline model and should
-recover the betas very well. If anything, a little worse than purely
-cross-sectional data -- observations aren't independent and we add
-heterogeneity with the firm trajectories
+Fitting a logistic regression on clean data: 
+
+- even though we know the DGP and all that influence it, basic GLM is unable 
+to perfectly recover it -- even on non-impaired data!
+- this is a finding in itself: though regulators love the logistic model for 
+its transparency, it is a little too simple for the complications of panel 
+data. We are breaking the assumption of independence and add heterogeneity 
+with firm trajectories, setting off the estimated betas
+- Beta recovery on the clean data does not improve with larger sample sizes
+
+
 
 ```{r}
 ## Model fit
@@ -338,6 +336,7 @@ print(round(recovery, 4))
 
 ```
 
+Sidequest:
 ## Feature reliability score on clean data
 
 **Feature Reliability Score (FRS)** testing from Igl & Gruber's Handbuch
@@ -348,10 +347,11 @@ predictors. FRS takes the geometric mean for the listed components.
 
 Because this is on clean data, we should expect the scores to be near 1
 (perfect quality). We get marked down slightly in Plausibility and
-Outliers because the FRS function is always looking to winsorize the
+Outliers because the FRS function is always looking to penalize data at the
 tails (it does not take into account that we are in the perfect world).
-Crefo does not get winsorized and is by default bounded at [100, 600] so
-it receives the only "perfect score".
+Crefo has different expectations since it is purchased from an external data
+provider and by default bounded at [100, 600] so it receives the only 
+"perfect score".
 
 ```{r}
 
@@ -381,8 +381,7 @@ Variables included: financial ratios and firm_age. Sector and Crefo are
 excluded: sector is a simple categorical entry unlikely to be missing;
 Crefo missingness is modelled separately under the MAR condition.
 
-Mild: ~8% missing per cell, Severe: ~28% missing per cell
-
+Mild: ~8% missing per cell; Severe: ~28% missing per cell
 
 
 Running the MCAR function to create two levels impaired data:
@@ -441,7 +440,7 @@ value of the variable itself (Little & Rubin, 2002; Zhang, 2023, p.
 Only allowing interest coverage to become impaired for a cleaner causal
 story that is easier to validate (if we see coefficient distortion, we
 know WHICH missing variable caused it, versus having multiple missing
-vars x their interactions).
+variables x their interactions).
 
 In real life: plausibly the most likely to be affected by MNAR because
 it requires current earnings data that troubled firms are more likely to
@@ -480,14 +479,17 @@ predictors, creating a less-precise dataset.
 
 Only continuous predictors are corrupted (except firm_age).
 
-Severity defined as % of each variable's clean SD Mild: SD_noise =
-+/-30% of clean SD, Severe: SD_noise = +/-100% of clean SD
+Severity defined as % of each variable's clean SD 
+
+Mild: SD_noise = +/-30% of clean SD, 
+Severe: SD_noise = +/-100% of clean SD
 
 Creating the impaired datasets:
 
 ```{r}
 cat("Mild noise impairment:\n")
 dat_noise_mild   <- impair_noise(dat, result$scaling, severity = "mild")
+
 cat("\nSevere noise impairment:\n")
 dat_noise_severe <- impair_noise(dat, result$scaling, severity = "severe")
 ```
@@ -534,12 +536,18 @@ dat_impl_severe <- impair_implausible(dat, result$scaling, severity = "severe")
 
 ------------------------------------------------------------------------
 
-Sidequest 2:
+Sidequest FRS part 2:
+
 ### Feature reliability score on impaired data
 
 Here we want to look at both the overall FRS score (aggregate, geometric
 mean) along with individual FRS components for mild and severe data before we 
 take any steps to prepare.
+
+Handbuch Datenqualität chapter 8: frames it as the first thing data scientists
+should do when they get a dataset, then use the results to decide what to 
+do next. Then can decide which varibales are prioritized for cleaning or
+dropped from modeling altogether.
 
 ```{r}
 
@@ -603,6 +611,20 @@ ggplot(frs_summary$by_variable[frs_summary$by_variable$type != "none", ],
 
 ```
 
+**Notes on FRS results pre-preparation:** 
+
+- Overall FRS scores hide the actual damage being done, because some fields
+like cross-field consistency and plausibility in MCAR get nearly a perfect score.
+That's why the worst dataset with 28% missings (MCAR severe) is listed as 
+"good data quality" (0.925 FRS)
+  --> likely makes more sense with real-world data instead of one-at-a-time 
+  impairments
+- Noise and implausible values don't show damage like missingness
+  --> Why? FRS designed to capture structural data problems: inconsistent 
+  relationships, domain violations, obvious extremes.
+
+
+
 ------------------------------------------------------------------------
 
 Last step before modeling:
@@ -642,7 +664,7 @@ Last step before modeling:
 
 
 
-Fixing the data: with the default method of Ersatzwert imputation, then median, then MICE
+Fixing the data with the practitioner default method of Ersatzwert imputation
 
 ```{r}
 
@@ -665,32 +687,7 @@ dat_impl_severe_prepped  <- prepare_for_modeling(dat_impl_severe, result$scaling
 
 ```
 
-
-
-```{r}
-# Missingness conditions fixed with MEDIAN imputation: impute NAs + recompute z-scores
-dat_mcar_mild_prepped_med   <- prepare_for_modeling(dat_mcar_mild, result$scaling, method = "median")
-dat_mcar_severe_prepped_med <- prepare_for_modeling(dat_mcar_severe, result$scaling,  method = "median")
-dat_mar_mild_prepped_med    <- prepare_for_modeling(dat_mar_mild, result$scaling, method = "median")
-dat_mar_severe_prepped_med  <- prepare_for_modeling(dat_mar_severe, result$scaling,  method = "median")
-dat_mnar_mild_prepped_med   <- prepare_for_modeling(dat_mnar_mild, result$scaling,  method = "median")
-dat_mnar_severe_prepped_med <- prepare_for_modeling(dat_mnar_severe, result$scaling,  method = "median")
-```
-
-```{r}
-# DELETE? We dont need to run this here if we source later
-
-# Missingness conditions fixed with MICE imputation: impute NAs + recompute z-scores
-#dat_mcar_mild_prepped_mice   <- prepare_for_modeling(dat_mcar_mild, result$scaling,  method = "mice")
-#dat_mcar_severe_prepped_mice <- prepare_for_modeling(dat_mcar_severe, result$scaling,  method = "mice")
-#dat_mar_mild_prepped_mice    <- prepare_for_modeling(dat_mar_mild, result$scaling, method = "mice")
-#dat_mar_severe_prepped_mice  <- prepare_for_modeling(dat_mar_severe, result$scaling,  method = "mice")
-#dat_mnar_mild_prepped_mice   <- prepare_for_modeling(dat_mnar_mild, result$scaling,  method = "mice")
-#dat_mnar_severe_prepped_mice <- prepare_for_modeling(dat_mnar_severe, result$scaling,  method = "mice")
-
-```
-
-
+Moving into a list for later:
 
 ```{r}
 prep_ersatz_list <- list(
@@ -707,7 +704,8 @@ prep_ersatz_list <- list(
 )
 ```
 
-**Sidequest 1: what happens if we use median or mice?**
+**Sidequest: what happens if we use median or mice?**
+
 Sidequest 1: Imputation Test
 
 
@@ -716,8 +714,15 @@ source("02_sidequest1_imputation_x_models.R")
 # Now median_full and mice_full exist with all 10 conditions
 ```
 
+**Notes on Imputation Method**:
 
-Last thing before modeling: Comparing FRS across imputation methods for
+- Despite more computational power needed, not seeing a large benefit to 
+using MICE over Ersatzwert or Median after looking at beta recovery
+- 
+
+
+**Sidequest 2: can FRS pick up on data quality issues before modeling**
+Comparing FRS across imputation methods for
 missingness
 
 ```{r}
@@ -809,7 +814,7 @@ frs_var_severe <- frs_compare %>%
 
 ggplot(frs_var_severe,
        aes(x = type, y = var, fill = frs)) +
-  geom_tile(colour = "white", linewidth = 0.4) +
+  geom_tile(color = "white", linewidth = 0.4) +
   geom_text(aes(label = sprintf("%.3f", frs)), size = 2.5) +
   facet_wrap(~ stage, nrow = 1) +
   scale_fill_gradient2(
@@ -966,11 +971,11 @@ glm_results$coef_recovery$stage <- factor(
 )
 
 ggplot(glm_results$coef_recovery,
-       aes(x = estimated, y = condition, colour = severity, shape = stage)) +
+       aes(x = estimated, y = condition, color = severity, shape = stage)) +
   geom_point(size = 2.5, position = position_dodge(width = 0.4)) +
-  geom_vline(aes(xintercept = true), linetype = "dashed", colour = "grey40") +
+  geom_vline(aes(xintercept = true), linetype = "dashed", color = "grey40") +
   facet_wrap(~ term, scales = "free_x", ncol = 4) +
-  scale_colour_manual(values = c(none = "grey30", mild = "#f39c12", severe = "#e74c3c")) +
+  scale_color_manual(values = c(none = "grey30", mild = "#f39c12", severe = "#e74c3c")) +
   scale_shape_manual(values = c(clean = 17, impaired = 16, prepared = 15)) +
   labs(title    = "Coefficient Recovery: Logistic Regression",
        subtitle = "Dashed line = DGP truth | triangle = clean, circle = impaired, square = prepared",
@@ -1269,6 +1274,7 @@ ggplot(xgb_grade_dist,
 
 
 
+
 # **Stage 5: Evaluation Metrics**
 
 ## Overview
@@ -1279,12 +1285,12 @@ the RR model validation framework, we measure two of the three pillars:
 **discrimination** (can the model rank-order firms by risk?) and
 **calibration** (do predicted PDs match observed default frequencies?).
 
-The third pillar — stability (temporal drift, population stability) — 
+(The third pillar — stability (temporal drift, population stability) — 
 is outside scope. Although the simulation generates a longitudinal panel 
 spanning 2005–2025, the research question concerns data quality effects 
 on model reliability rather than temporal model degradation. Stability 
 testing would require a dedicated development/validation time split, 
-which is orthogonal to the Monte Carlo design and left for future work.
+which is orthogonal to the Monte Carlo design and left for future work.)
 
 **Evaluation design.** Every model -- clean-trained, impaired-trained,
 prepared-trained -- predicts on the **same clean dataset**. This is the
@@ -1321,6 +1327,9 @@ sampling variability that a train/test split would otherwise supply.
     calibration; below 1.0 means the model overpredicts default risk;
     above 1.0 means underprediction. This is the simplest regulatory
     calibration check.
+
+**Main focus: Gini Coefficient (discrimination), O/E (overall calibration),
+secondarily Brier Score (discrimination + calibration)**
 
 Running it for both models -- every model scores on the same clean data:
 
@@ -1379,13 +1388,13 @@ clean_gini <- all_metrics[all_metrics$condition == "clean",
                           c("model_type", "gini")]
 
 ggplot(plot_metrics, aes(x = condition, y = gini,
-                         colour = stage, shape = stage)) +
+                         color = stage, shape = stage)) +
   geom_point(size = 3, position = position_dodge(width = 0.4)) +
   geom_hline(data = clean_gini,
              aes(yintercept = gini),
-             linetype = "dashed", colour = "grey40") +
+             linetype = "dashed", color = "grey40") +
   facet_wrap(~ model_type, ncol = 1) +
-  scale_colour_manual(values = c(impaired = "#e74c3c", prepared = "#2ecc71")) +
+  scale_color_manual(values = c(impaired = "#e74c3c", prepared = "#2ecc71")) +
   scale_shape_manual(values = c(impaired = 16, prepared = 15)) +
   labs(title    = "Discriminatory Power: Gini Coefficient",
        subtitle = "Dashed line = clean-trained baseline | closer to line = better recovery",
@@ -1397,13 +1406,16 @@ ggplot(plot_metrics, aes(x = condition, y = gini,
 
 ```
 
-GINI / DISCRIMINATION NOTES:
+**Notes on Gini / Discrimination**:
 
-- XGBoost clean baseline (~0.675) meaningfully outperforms GLM (~0.60) due to its ability to capture nonlinearities in the DGP
-GLM is surprisingly robust across missingness conditions — complete-case deletion preserves clean relationships on smaller but undistorted data
-- Preparation (ersatzwert imputation) 
-- Noise is where GLM shows more robustness than XGBoost relative to their own baselines, but XGBoost at its worst still beats GLM's clean ceiling
-- Implausible values hit both models hardest on discrimination
+• XGBoost clean baseline (~0.675) meaningfully outperforms GLM (~0.60) due to its ability to capture nonlinearities in the DGP
+• GLM is surprisingly robust across missingness conditions — complete-case deletion and RR's Ersatzwert imputation preserves clean relationships on smaller but undistorted data
+• Preparation does not ever seem to help discrimination -- always on the same level as the default NA handling
+• Severity gradient: mild-to-severe is a bigger step down for XGBoost than GLM
+• MCAR missingness is a problem for XGB but not GLM. Because the missingness carries no signal and XG is looking to split based on signal. Preparation doesn't help in either case because there is nothing to fix in the relationship
+• MNAR missingness: both models are able to rank firms in this case, I guess because decaying firms have other signs other than missing interest_cov. XGB native NA handling might have even learned that having missing "interest_cov" is a risk indicator
+• Noise is where GLM shows more robustness than XGBoost relative to their own baselines, but XGBoost at its worst still beats GLM’s clean ceiling. In GLM, noise washes out so the signal isn't that far away. But XGB chases some of the noise damage / integrates into the trees
+• Implausible values = biggest challenge for discrimination in GLM. Mild implausible with preparation can somehow solve it (winsorizing off the extreme values), but severe implausible is too much to ignore (especially when they can't get caught by the pipeline)
 
 
 
@@ -1429,13 +1441,13 @@ clean_brier <- all_metrics[all_metrics$condition == "clean",
                            c("model_type", "brier")]
 
 ggplot(plot_metrics, aes(x = condition, y = brier,
-                         colour = stage, shape = stage)) +
+                         color = stage, shape = stage)) +
   geom_point(size = 3, position = position_dodge(width = 0.4)) +
   geom_hline(data = clean_brier,
              aes(yintercept = brier),
-             linetype = "dashed", colour = "grey40") +
+             linetype = "dashed", color = "grey40") +
   facet_wrap(~ model_type, ncol = 1) +
-  scale_colour_manual(values = c(impaired = "#e74c3c", prepared = "#2ecc71")) +
+  scale_color_manual(values = c(impaired = "#e74c3c", prepared = "#2ecc71")) +
   scale_shape_manual(values = c(impaired = 16, prepared = 15)) +
   labs(title    = "Calibration Quality: Brier Score",
        subtitle = "Dashed line = clean-trained baseline | lower is better",
@@ -1448,13 +1460,15 @@ ggplot(plot_metrics, aes(x = condition, y = brier,
 ```
 
 
-Brier score (discrimination + calibration combined)
+**Brier score** (composite, discrimination + calibration combined)
 
-- XGBoost again has the better clean baseline
-- GLM complete-case analysis holds calibration well until noise severe and implausible conditions, where it jumps sharply
-For XGBoost, impaired and prepared are nearly identical across most conditions — degradation is driven by the information loss itself, not the repair strategy
-- MAR is the most stable condition for both models, consistent with the mechanism (missingness on crefo is independent of default risk conditional on observables)
-- MNAR prepared takes a hit in GLM because ersatzwert imputation pulls the missing interest_cov tail toward the center, underestimating risk for the most distressed firms
+	• XGBoost again has the better clean baseline. Starts lower and stays lower.
+	• Preparation hurts Brier score. Prepared data has the "mass point" issue that shrinks the variance, then GLM overcompensates / higher predicted PDs than expected. For XGB: mass point downgrades its information set. Replaces a better mechanism with a less-precise one
+		○ Therefore it's almost always higher than the impaired data in all cases)
+		○ XGBoost NA handling for MCAR / MNAR severe,noise also distorts the trees. 
+	• GLM complete-case analysis holds calibration well until noise severe and implausible conditions, where it jumps sharply.  Impl Mild and Severe stay at the same level.
+	• MAR is the most stable condition for both models, consistent with the mechanism (missingness on crefo is independent of default risk conditional on observables)
+Implausible mild GLM: the only case where preparation helps (winsorizing), but we can't get rid of the distorted data not caught by preparation. 
 
 
 
@@ -1466,14 +1480,14 @@ clean_oe <- all_metrics[all_metrics$condition == "clean",
                         c("model_type", "oe_ratio")]
 
 ggplot(plot_metrics, aes(x = condition, y = oe_ratio,
-                         colour = stage, shape = stage)) +
+                         color = stage, shape = stage)) +
   geom_point(size = 3, position = position_dodge(width = 0.4)) +
-  geom_hline(yintercept = 1.0, linetype = "solid", colour = "grey70", linewidth = 0.3) +
+  geom_hline(yintercept = 1.0, linetype = "solid", color = "grey70", linewidth = 0.3) +
   geom_hline(data = clean_oe,
              aes(yintercept = oe_ratio),
-             linetype = "dashed", colour = "grey40") +
+             linetype = "dashed", color = "grey40") +
   facet_wrap(~ model_type, ncol = 1) +
-  scale_colour_manual(values = c(impaired = "#e74c3c", prepared = "#2ecc71")) +
+  scale_color_manual(values = c(impaired = "#e74c3c", prepared = "#2ecc71")) +
   scale_shape_manual(values = c(impaired = 16, prepared = 15)) +
   labs(title    = "Aggregate Calibration: Observed / Expected Ratio",
        subtitle = "Solid grey = perfect calibration (1.0) | Dashed = clean baseline",
@@ -1485,11 +1499,20 @@ ggplot(plot_metrics, aes(x = condition, y = oe_ratio,
 
 ```
 
-Notes O/E ratio (pure calibration):
+**O/E ratio** (pure calibration):
 
-- How can preparation undermine GLM so much?
-- MNAR severe is the standout: GLM impaired underpredicts by ~15% (O/E ≈ 1.15), preparation recovers roughly half of that
-Noise and implausible values look stable on O/E despite degraded Gini — this is the dangerous pattern where a supervisor checking only aggregate calibration would miss the problem
+Note that this is a ratio of totals, and errors can cancel out in aggregate (doesn't look as dramatic as Brier)
+
+Can diverge from Brier when prediction errors are unsystematic
+
+	• Ersatzwert with XGBoost leads to a loss of precision that shows up in Brier (which is more about grading individual predictions) but is hidden in O/E (aggregate measure)
+	• Ersatzwert with GLM  hurts calibration due to the mass-point effect, though at least being under the 1.0 line is safer from a regulatory perspective
+	• MNAR Severe: an interesting story
+		○ GLM MNAR without preparation underpredicts risk (dangerous). MNAR deletes interest_cov for distressed firms, and complete case analysis deletes all of these firms, so it thinks the risk isn’t there
+		○ Ersatzwert GLM preparation flips it: replaces the missing interest_cov with one value that represents all the distressed firms, therefore overstating the risk. Trading one miscalibration for another
+		○ XGBoost lands on the higher side regardless of preparation. Can't overcome the bias either or learn from the missingness (can overcome MAR perfectly but can't figure this out)
+	• Implausible and Noise doesn't look too far from the 1.0, but Gini showed meaningful loss in discrimination (dangerous because it might fly under the radar)
+Implausible mild vs. severe for prepared data: under mild impairment, the winsorizing thresholds are tighter and it clips more into legit variation in the data --> distorts it
 
 
 
@@ -1510,7 +1533,6 @@ that answers the research question.
 ```{r, fig.width=10, fig.height=7}
 
 # ── Calibration plot helper ────────────────────────────────────────────
-
 build_calibration_data <- function(models,
                                    eval_data,
                                    formula,
@@ -1576,10 +1598,6 @@ build_calibration_data <- function(models,
   cal_df
 }
 
-```
-
-```{r, fig.width=10, fig.height=7}
-
 # ── Build calibration data for both model types ────────────────────────
 
 glm_cal <- build_calibration_data(
@@ -1627,27 +1645,13 @@ condition_order <- c("clean",
 cal_plot_data$facet_label <- factor(cal_plot_data$facet_label,
                                     levels = condition_order)
 
-ggplot(cal_plot_data,
-       aes(x = mean_pred_pd, y = obs_default_rate,
-           colour = model_type, shape = stage)) +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey50") +
-  geom_point(size = 2.5) +
-  facet_wrap(~ facet_label, ncol = 3, scales = "free") +
-  scale_colour_manual(values = c(glm = "#3498db", xgboost = "#e67e22")) +
-  scale_shape_manual(values = c(clean = 17, prepared = 15)) +
-  labs(title    = "Calibration Plot: Predicted PD vs. Observed Default Rate by Grade",
-       subtitle = "Dashed line = perfect calibration | Clean (triangle) vs. Prepared (square)",
-       x = "Mean Predicted PD (within grade)",
-       y = "Observed Default Rate (within grade)") +
-  theme_minimal() +
-  theme(strip.text = element_text(face = "bold"),
-        legend.position = "bottom")
+
 
 ```
 
+
 ```{r}
 # ── Calibration deviation heatmap ──────────────────────────────────────
-library(ggplot2)
 
 # Relative deviation: positive = under-prediction, negative = over-prediction
 cal_plot_data$rel_dev <- with(cal_plot_data,
@@ -1660,14 +1664,14 @@ cal_plot_data$rel_dev_cap <- pmin(pmax(cal_plot_data$rel_dev, -1), 1)
 for (mt in c("glm", "xgboost")) {
   p <- ggplot(cal_plot_data[cal_plot_data$model_type == mt, ],
               aes(x = facet_label, y = factor(grade), fill = rel_dev_cap)) +
-    geom_tile(colour = "white", linewidth = 0.5) +
+    geom_tile(color = "white", linewidth = 0.5) +
     scale_fill_gradient2(
       low = "#2166ac", mid = "white", high = "#b2182b",
       midpoint = 0, limits = c(-1, 1),
       name = "Relative\ndeviation"
     ) +
     geom_text(aes(label = sprintf("%.0f%%", rel_dev * 100)),
-              size = 2.5, colour = "grey20") +
+              size = 2.5, color = "grey20") +
     labs(
       title = paste0("Calibration Deviation by Grade — ", toupper(mt)),
       subtitle = "Blue = over-prediction (conservative) | Red = under-prediction (risky)",
@@ -1683,10 +1687,11 @@ for (mt in c("glm", "xgboost")) {
 ```
 
 
-Calibration plot (grade-level calibration) (re-do)
+Calibration plot (grade-level calibration)
 
-- Grade-level calibration mostly holds across conditions, confirming that the O/E stability isn't just offsetting errors across grades
-- Main vulnerability is in the highest-PD grades, where ersatzwert imputation compresses the tail and underpredicts risk for the riskiest firms
+- GLM underestimates the risk on the safe firms (low rating) but overestimates on the risky firms (low rating)
+- XGBoost does the opposite (arguably worse), trees are potentially overfit?
+- Noise and implausibles for GLM also create more of a dangerous pattern where risky firms are underestimated
 
 
 
@@ -1737,9 +1742,330 @@ print(summary_metrics[, c("model_type", "condition", "stage",
 
 # **Stage 6: Monte Carlo**
 
+Assuming the Monte Carlo has been run and stored as an RDS file in the current
+project directory.  
+
+---
+
+The single-iteration analysis above demonstrates *how* each impairment type and the Ersatzwert preparation pipeline affect model performance. But a single random draw can't tell us whether those effects are stable or just an artifact of one particular dataset. The Monte Carlo simulation repeats the full pipeline — DGP → impair → prepare → fit → evaluate — across X independent iterations, each with a fresh random seed and 5,000 firms, to produce distributional evidence.
+
+The MC runner (`03_monte_carlo.R`) sources the same functions used throughout this notebook. The full set of tables and figures is produced separately by `04_mc_analysis.R`; here we show the key results.
+
+
+
 ```{r}
 
-readRDS("mc_results_final.rds")
+mc <- readRDS("mc_results_final.rds")
+
+cat(sprintf("Monte Carlo iterations: %d\nFirms per iteration: %d\nTotal metric rows: %d\n",
+            mc$config$N_MC, mc$config$N_FIRMS, nrow(mc$metrics)))
+
+# Shared aesthetics
+stage_colors <- c(clean = "#2C3E50", impaired = "#E74C3C", prepared = "#2ECC71")
+
+theme_thesis <- theme_minimal(base_size = 11) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 12),
+    strip.text       = element_text(face = "bold"),
+    legend.position  = "bottom",
+    panel.grid.minor = element_blank()
+  )
+
+
+summary_table <- mc$metrics %>%
+  group_by(model_type, type, severity, stage) %>%
+  summarise(
+    gini_mean = mean(gini),   gini_sd = sd(gini),
+    brier_mean = mean(brier), brier_sd = sd(brier),
+    oe_mean = mean(oe_ratio), oe_sd = sd(oe_ratio),
+    .groups = "drop"
+  )
+
+summary_table
 
 ```
+
+
+## 6.1 Summary Table
+
+The core finding in one table: mean and standard deviation of each metric across all MC iterations, by impairment type, severity, stage, and model architecture. Low standard deviations confirm that single-iteration results were not flukes.
+
+```{r mc-summary-table}
+clean_baseline <- mc$metrics %>%
+  filter(stage == "clean") %>%
+  select(iteration, model_type,
+         gini_clean = gini, brier_clean = brier, oe_clean = oe_ratio)
+
+tbl <- mc$metrics %>%
+  left_join(clean_baseline, by = c("iteration", "model_type")) %>%
+  mutate(
+    delta_gini  = gini     - gini_clean,
+    delta_brier = brier    - brier_clean,
+    delta_oe    = oe_ratio - oe_clean
+  ) %>%
+  group_by(model_type, type, severity, stage) %>%
+  summarise(
+    gini_mean  = round(mean(gini), 4),
+    gini_sd    = round(sd(gini), 4),
+    d_gini     = round(mean(delta_gini), 4),
+    brier_mean = round(mean(brier), 6),
+    oe_mean    = round(mean(oe_ratio), 4),
+    d_oe       = round(mean(delta_oe), 4),
+    .groups    = "drop"
+  ) %>%
+  arrange(model_type, type, severity, match(stage, c("clean", "impaired", "prepared")))
+
+knitr::kable(tbl, caption = "Monte Carlo summary: metric means and standard deviations")
+```
+
+## 6.2 Gini Coefficient — Discrimination Stability
+
+Boxplots across all iterations confirm which impairment types degrade discrimination (Gini drops) and whether Ersatzwert preparation recovers it.
+
+```{r mc-gini-boxplots, fig.width=12, fig.height=8}
+plot_data <- mc$metrics %>%
+  mutate(
+    stage    = factor(stage, levels = c("clean", "impaired", "prepared")),
+    severity = factor(severity, levels = c("none", "mild", "severe")),
+    panel    = ifelse(type == "clean", "clean",
+                      paste0(type, " — ", severity))
+  )
+
+for (mt in c("glm", "xgboost")) {
+
+    clean_gini_mean <- mc$metrics %>%
+    filter(model_type == mt, stage == "clean") %>%
+    pull(gini) %>% mean()
+  
+  p <- ggplot(
+    plot_data %>% filter(model_type == mt),
+    aes(x = stage, y = gini, fill = stage)
+  ) +
+    geom_hline(yintercept = clean_gini_mean, linetype = "dotted", color = "grey40") +
+    geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
+    scale_fill_manual(values = stage_colors) +
+    facet_wrap(~ panel, scales = "free_x", nrow = 2) +
+    labs(
+      title = sprintf("Gini across %d MC iterations (%s)", mc$config$N_MC, toupper(mt)),
+      x = NULL, y = "Gini"
+    ) +
+    theme_thesis +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+  print(p)
+}
+```
+
+Key observations:
+
+- **Missing-data types (MCAR, MAR, MNAR):** Gini is largely preserved even after impairment, and Ersatzwert preparation maintains this. The discrimination-preserving property of Ersatzwert is confirmed as a stable result, not a single-draw artifact.
+- **Noise and implausible:** These show visible Gini degradation, especially at severe levels. Preparation does *not* fully recover discrimination here — the signal corruption cannot be undone by imputation.
+- **GLM vs. XGBoost:** XGBoost achieves a higher clean-data Gini ceiling but shows wider boxes under noise/implausible, confirming its greater sensitivity to value corruption.
+
+## 6.3 O/E Ratio — Calibration Distortion
+
+The O/E ratio reveals whether predicted default rates match observed rates. The dashed line at 1.0 represents perfect calibration.
+
+```{r mc-oe-boxplots, fig.width=12, fig.height=8}
+for (mt in c("glm", "xgboost")) {
+
+  p <- ggplot(
+    plot_data %>% filter(model_type == mt),
+    aes(x = stage, y = oe_ratio, fill = stage)
+  ) +
+    geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "grey40") +
+    scale_fill_manual(values = stage_colors) +
+    facet_wrap(~ panel, scales = "free_x", nrow = 2) +
+    labs(
+      title = sprintf("O/E ratio across %d MC iterations (%s)", mc$config$N_MC, toupper(mt)),
+      x = NULL, y = "O/E ratio"
+    ) +
+    theme_thesis +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+  print(p)
+}
+```
+
+Key observations:
+
+- **Ersatzwert distorts calibration under missingness:** The mass-point effect of single-value replacement systematically shifts the predicted default rate. O/E moves away from 1.0 after preparation, even though discrimination (Gini) is preserved. This is the core Ersatzwert trade-off, confirmed across all MC iterations.
+- **Noise/implausible show the opposite pattern:** O/E stays relatively stable (aggregate rates are preserved when values are corrupted, not removed), but Gini degrades. A calibration-only audit would miss this degradation entirely.
+
+## 6.4 Degradation Heatmap
+
+A single view of mean Gini degradation from each iteration's clean baseline.
+
+```{r mc-heatmap, fig.width=10, fig.height=6}
+heatmap_data <- mc$metrics %>%
+  filter(stage != "clean") %>%
+  left_join(clean_baseline, by = c("iteration", "model_type")) %>%
+  mutate(delta_gini = gini - gini_clean) %>%
+  group_by(model_type, type, severity, stage) %>%
+  summarise(delta_gini = mean(delta_gini), .groups = "drop") %>%
+  mutate(
+    row_label = paste(type, severity),
+    col_label = paste(toupper(model_type), stage)
+  )
+
+ggplot(heatmap_data, aes(x = col_label, y = row_label, fill = delta_gini)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.4f", delta_gini)), size = 3) +
+  scale_fill_gradient2(
+    low = "#E74C3C", mid = "white", high = "#2ECC71",
+    midpoint = 0, name = "Mean\n\u0394 Gini"
+  ) +
+  labs(
+    title = "Mean Gini degradation from clean baseline",
+    subtitle = "Negative = worse discrimination. Per-iteration pairing.",
+    x = NULL, y = NULL
+  ) +
+  theme_thesis +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+## 6.5 Coefficient Recovery
+
+GLM coefficients across iterations, with ±1 SD bands. The dashed line marks the true DGP beta for each predictor.
+
+```{r mc-coef-recovery, fig.width=14, fig.height=10}
+coef_summary <- mc$coefs %>%
+  group_by(stage, condition, type, severity, term) %>%
+  summarise(
+    est_mean = mean(estimated),
+    est_lo   = mean(estimated) - sd(estimated),
+    est_hi   = mean(estimated) + sd(estimated),
+    true_val = first(true),
+    .groups  = "drop"
+  ) %>%
+  mutate(
+    stage = factor(stage, levels = c("clean", "impaired", "prepared")),
+    panel = ifelse(condition == "clean", "clean",
+                   paste0(type, " — ", severity))
+  )
+
+key_terms <- c("log_assets", "debt_to_equity", "interest_cov",
+               "firm_age", "crefo")
+
+ggplot(
+  coef_summary %>% filter(term %in% key_terms),
+  aes(x = stage, y = est_mean, color = stage)
+) +
+  geom_pointrange(aes(ymin = est_lo, ymax = est_hi), size = 0.4) +
+  geom_hline(aes(yintercept = true_val), linetype = "dashed",
+             color = "grey50", linewidth = 0.3) +
+  scale_color_manual(values = stage_colors) +
+  facet_grid(term ~ panel, scales = "free_y") +
+  labs(
+    title = "GLM coefficient recovery across MC iterations",
+    subtitle = "Points = mean estimate, bars = \u00B1 1 SD. Dashed = true DGP beta.",
+    x = NULL, y = "Estimated coefficient"
+  ) +
+  theme_thesis +
+  theme(
+    axis.text.x  = element_text(angle = 45, hjust = 1, size = 7),
+    strip.text.y = element_text(angle = 0)
+  )
+```
+
+```{r}
+# ── Quadrant plot: Gini (x) vs O/E (y) ──────────────────────────
+
+
+
+# ── 1. Get clean baselines per model ─────────────────────────────
+clean_ref <- summary_table %>%
+  filter(stage == "clean") %>%
+  select(model_type, clean_gini = gini_mean, clean_oe = oe_mean)
+
+# ── 2. Build plot data: impaired + prepared only ─────────────────
+quad_data <- summary_table %>%
+  filter(stage != "clean") %>%
+  left_join(clean_ref, by = "model_type") %>%
+  mutate(
+    condition = paste0(type, "_", severity),
+    label     = paste0(type, "_", severity, "\n(", stage, ")"),
+    short_label = paste0(
+      substr(type, 1, 4),
+      ifelse(severity == "mild", "_m", "_s")
+    )
+  )
+
+# ── 3. Shape and color mappings ─────────────────────────────────
+stage_shapes  <- c(impaired = 16, prepared = 15)   # circle vs square
+type_colors  <- c(
+  mcar = "#3498DB",   # blue
+  mar  = "#2ECC71",   # green
+  mnar = "#F39C12",   # orange
+  noise = "#E74C3C",  # red
+  impl = "#9B59B6"    # purple
+)
+
+# ── 4. Plot ──────────────────────────────────────────────────────
+for (mt in c("glm", "xgboost")) {
+  
+  ref <- clean_ref %>% filter(model_type == mt)
+  
+  p <- ggplot(
+    quad_data %>% filter(model_type == mt),
+    aes(x = gini_mean, y = oe_mean, color = type, shape = stage)
+  ) +
+    # Crosshair at clean baseline
+    geom_hline(yintercept = ref$clean_oe, linetype = "dashed", color = "grey50", linewidth = 0.4) +
+    geom_vline(xintercept = ref$clean_gini, linetype = "dashed", color = "grey50", linewidth = 0.4) +
+    
+    # Perfect calibration reference
+    geom_hline(yintercept = 1.0, linetype = "dotted", color = "grey80", linewidth = 0.3) +
+    
+    # Points
+    geom_point(size = 3.5, alpha = 0.85) +
+    
+    # Labels (using ggrepel to avoid overlap)
+    geom_text_repel(
+      aes(label = short_label),
+      size = 2.8,
+      max.overlaps = 20,
+      segment.size = 0.3,
+      segment.color = "grey70",
+      box.padding = 0.4
+    ) +
+    
+    scale_color_manual(values = type_colors, name = "Impairment") +
+    scale_shape_manual(values = stage_shapes, name = "Stage") +
+    
+    # Quadrant annotations
+   # annotate("text", x = ref$clean_gini + 0.002, y = ref$clean_oe + 0.02,
+    #         label = "Healthy", fontface = "italic", size = 3, color = "grey50") +
+    #annotate("text", x = ref$clean_gini - 0.015, y = ref$clean_oe + 0.02,
+     #        label = "Calibrated but\ncan't rank", fontface = "italic",
+      #       size = 2.5, color = "grey50") +
+  #  annotate("text", x = ref$clean_gini + 0.002, y = ref$clean_oe - 0.04,
+       #      label = "Ranks well but\nmiscalibrated", fontface = "italic",
+        #     size = 2.5, color = "grey50") +
+  #  annotate("text", x = ref$clean_gini - 0.015, y = ref$clean_oe - 0.04,
+          #   label = "Both broken", fontface = "italic",
+         #    size = 2.5, color = "grey50") +
+    
+    labs(
+      title    = sprintf("Discrimination vs. Calibration — %s", toupper(mt)),
+      subtitle = "Dashed crosshair = clean-trained baseline | Dotted = perfect calibration (O/E = 1.0)",
+      x = "Gini (discrimination →)",
+      y = "O/E ratio (calibration)"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(
+      plot.title       = element_text(face = "bold", size = 12),
+      legend.position  = "bottom",
+      panel.grid.minor = element_blank()
+    )
+  
+  print(p)
+}
+
+
+
+```
+
+
 

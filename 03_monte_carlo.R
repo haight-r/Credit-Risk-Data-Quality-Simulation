@@ -4,7 +4,7 @@
 # Monte Carlo simulation: N iterations of the full pipeline.
 # Each iteration = fresh DGP → impair → prepare → fit → evaluate.
 #
-# Dependencies: base R + xgboost (no tidyverse, no mice)
+# Dependencies: base R + xgboost
 # Expected runtime: ~2-4 hours for 200 iterations on a modern laptop
 #
 # Usage:
@@ -19,7 +19,7 @@ library(xgboost)
 # CONFIG
 # ============================================================================
 
-N_MC    <- 2L       # number of Monte Carlo iterations
+N_MC    <- 10L       # number of Monte Carlo iterations
 N_FIRMS <- 5000L      # firms per iteration
 
 # Where to save results

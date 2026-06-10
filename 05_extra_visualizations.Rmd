@@ -48,16 +48,16 @@ ggplot(year_stats, aes(x = obs_year)) +
            fill = "grey75", width = 0.7) +
   # Line: default rate
   geom_line(aes(y = default_rate),
-            colour = "#1a3a5c", linewidth = 1.1) +
+            color = "#1a3a5c", linewidth = 1.1) +
   geom_point(aes(y = default_rate),
-             colour = "#1a3a5c", size = 2.2) +
+             color = "#1a3a5c", size = 2.2) +
   # Dual axes
   scale_y_continuous(
-    name   = "Ausfallrate",
+    name   = "Default Rate",
     labels = scales::percent_format(accuracy = 0.1),
     limits = c(0, max_rate),
     sec.axis = sec_axis(~ . / scale_factor,
-                        name   = "Fallzahl",
+                        name   = "Number of Firms",
                         labels = scales::comma_format())
   ) +
   scale_x_continuous(
@@ -65,7 +65,7 @@ ggplot(year_stats, aes(x = obs_year)) +
   ) +
   labs(
     title = "Simulated Default Rate and Portfolio Size by Year",
-    x     = "Jahr"
+    x     = "Year"
   ) +
   theme_minimal(base_size = 13) +
   theme(
@@ -79,9 +79,6 @@ cat("\n── Year-level summary ──\n")
 print(year_stats, n = 30)
 
 ```
-
-
-
 
 ------------------------------------------------------------------------
 
@@ -308,3 +305,269 @@ for (nm in c("dat_mar_mild", "dat_mar_severe")) {
 }
 
 ```
+```{r}
+
+build_calibration_data <- function(models,
+                                   eval_data,
+                                   formula,
+                                   model_type = c("glm", "xgboost")) {
+
+  model_type <- match.arg(model_type)
+  response   <- all.vars(formula)[1]
+  predictors <- all.vars(formula)[-1]
+  actual     <- eval_data[[response]]
+
+  # Same grade boundaries as assign_pd_grades()
+  grade_breaks <- c(0, 0.00001, 0.0006, 0.0011, 0.003,
+                    0.007, 0.015, 0.03, 0.08, 0.15, 1.0)
+  grade_labels <- as.character(1:10)
+
+  cal_list <- vector("list", length(models))
+  names(cal_list) <- names(models)
+
+  for (key in names(models)) {
+
+    mod <- models[[key]]
+
+    if (model_type == "glm") {
+      pd_pred <- predict(mod, newdata = eval_data, type = "response")
+    } else {
+      X <- as.matrix(eval_data[, predictors, drop = FALSE])
+      pd_pred <- predict(mod, xgb.DMatrix(data = X))
+    }
+
+    grade <- cut(pd_pred,
+                 breaks = grade_breaks,
+                 labels = grade_labels,
+                 include.lowest = TRUE,
+                 right = TRUE)
+
+    tmp <- data.frame(pd_pred = pd_pred, actual = actual,
+                      grade = as.integer(as.character(grade)))
+
+    agg <- aggregate(cbind(pd_pred, actual) ~ grade, data = tmp, FUN = mean)
+    counts <- aggregate(actual ~ grade, data = tmp, FUN = length)
+    names(counts)[2] <- "n"
+    agg <- merge(agg, counts, by = "grade")
+
+    names(agg)[names(agg) == "pd_pred"] <- "mean_pred_pd"
+    names(agg)[names(agg) == "actual"]  <- "obs_default_rate"
+
+    # Parse key
+    stage <- ifelse(key == "clean", "clean",
+                    ifelse(grepl("^imp_", key), "impaired", "prepared"))
+    condition <- ifelse(key == "clean", "clean",
+                        sub("^imp_|^prep_", "", key))
+
+    agg$key        <- key
+    agg$stage      <- stage
+    agg$condition  <- condition
+    agg$model_type <- model_type
+
+    cal_list[[key]] <- agg
+  }
+
+  cal_df <- do.call(rbind, cal_list)
+  rownames(cal_df) <- NULL
+  cal_df
+}
+
+# ── Build calibration data for both model types ────────────────────────
+
+glm_cal <- build_calibration_data(
+  models     = glm_results$models,
+  eval_data  = dat,
+  formula    = pd_formula,
+  model_type = "glm"
+)
+
+xgb_cal <- build_calibration_data(
+  models     = xgb_results$models,
+  eval_data  = dat,
+  formula    = pd_formula,
+  model_type = "xgboost"
+)
+
+all_cal <- rbind(glm_cal, xgb_cal)
+
+# Filter to clean + prepared only (what a practitioner would deploy)
+cal_plot_data <- all_cal[all_cal$stage %in% c("clean", "prepared"), ]
+
+# For prepared conditions, parse type + severity for faceting
+cal_plot_data$type <- ifelse(
+  cal_plot_data$condition == "clean", "clean",
+  sub("_mild$|_severe$", "", cal_plot_data$condition)
+)
+cal_plot_data$severity <- ifelse(
+  cal_plot_data$condition == "clean", "none",
+  ifelse(grepl("severe", cal_plot_data$condition), "severe", "mild")
+)
+
+# Label for faceting: one panel per impairment type
+cal_plot_data$facet_label <- ifelse(
+  cal_plot_data$condition == "clean", "clean",
+  cal_plot_data$condition
+)
+
+condition_order <- c("clean",
+                     "mcar_mild", "mcar_severe",
+                     "mar_mild",  "mar_severe",
+                     "mnar_mild", "mnar_severe",
+                     "noise_mild", "noise_severe",
+                     "impl_mild", "impl_severe")
+
+cal_plot_data$facet_label <- factor(cal_plot_data$facet_label,
+                                    levels = condition_order)
+
+ggplot(cal_plot_data,
+       aes(x = mean_pred_pd, y = obs_default_rate,
+           color = model_type, shape = stage)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+  geom_point(size = 2.5) +
+  facet_wrap(~ facet_label, ncol = 3, scales = "free") +
+  scale_color_manual(values = c(glm = "#3498db", xgboost = "#e67e22")) +
+  scale_shape_manual(values = c(clean = 17, prepared = 15)) +
+  labs(title    = "Calibration Plot: Predicted PD vs. Observed Default Rate by Grade",
+       subtitle = "Dashed line = perfect calibration | Clean (triangle) vs. Prepared (square)",
+       x = "Mean Predicted PD (within grade)",
+       y = "Observed Default Rate (within grade)") +
+  theme_minimal() +
+  theme(strip.text = element_text(face = "bold"),
+        legend.position = "bottom")
+
+
+
+```
+
+
+```{r}
+
+# ── Grade migration heatmap ─────────────────────────────────────────
+
+# Get clean-data grade per firm
+clean_grades <- glm_grades %>%
+  filter(stage == "clean") %>%
+  select(firm_id, clean_grade = grade)
+
+# Join clean grade onto impaired + prepared
+migration <- glm_grades %>%
+  filter(stage != "clean") %>%
+  inner_join(clean_grades, by = "firm_id") %>%
+  count(condition, stage, clean_grade, grade, name = "n") %>%
+  group_by(condition, stage) %>%
+  mutate(share = n / sum(n)) %>%
+  ungroup()
+
+migration$condition <- factor(migration$condition, levels = condition_order)
+migration$stage     <- factor(migration$stage, levels = c("impaired", "prepared"))
+
+
+# One plot per impairment type = 2 rows (mild/severe) × 2 cols (impaired/prepared)
+# → 5 plots of 4 panels each, each panel is big enough to read
+
+for (imp_type in c("mcar", "mar", "mnar", "noise", "impl")) {
+
+  p <- migration %>%
+    filter(grepl(imp_type, condition)) %>%
+    mutate(severity = ifelse(grepl("severe", condition), "severe", "mild")) %>%
+    ggplot(aes(x = factor(grade), y = factor(clean_grade), fill = share)) +
+    geom_tile(color = "white", linewidth = 0.3) +
+    # Diagonal highlight instead of geom_abline
+    geom_tile(data = . %>% filter(as.numeric(as.character(grade)) ==
+                                   as.numeric(as.character(clean_grade))),
+              aes(x = factor(grade), y = factor(clean_grade)),
+              fill = NA, color = "black", linewidth = 0.5) +
+    scale_fill_gradient(low = "white", high = "steelblue",
+                        labels = scales::percent_format()) +
+    facet_grid(severity ~ stage) +
+    scale_x_discrete(drop = FALSE) +
+    scale_y_discrete(drop = FALSE) +
+    labs(title = paste0("Grade Migration: ", toupper(imp_type)),
+         x = "Grade after impairment / preparation",
+         y = "Grade on clean data",
+         fill = "Share") +
+    theme_minimal() +
+    theme(panel.grid = element_blank(),
+          aspect.ratio = 1)
+
+  print(p)
+}
+
+
+```
+
+```{r}
+# % of firms that changed grade
+migration_summary <- migration %>%
+  mutate(migrated = grade != clean_grade) %>%
+  group_by(condition, stage) %>%
+  summarise(pct_migrated = sum(share[migrated]), .groups = "drop")
+
+migration_summary
+```
+
+```{r}
+# ── XGBoost migration data ──────────────────────────────────────────
+
+clean_grades_xgb <- xgb_grades %>%
+  filter(stage == "clean") %>%
+  select(firm_id, clean_grade = grade)
+
+migration_xgb <- xgb_grades %>%
+  filter(stage != "clean") %>%
+  inner_join(clean_grades_xgb, by = "firm_id") %>%
+  count(condition, stage, clean_grade, grade, name = "n") %>%
+  group_by(condition, stage) %>%
+  mutate(share = n / sum(n)) %>%
+  ungroup()
+
+migration_xgb$condition <- factor(migration_xgb$condition, levels = condition_order)
+migration_xgb$stage     <- factor(migration_xgb$stage, levels = c("impaired", "prepared"))
+
+# ── Same loop, just point at migration_xgb ──────────────────────────
+
+for (imp_type in c("mcar", "mar", "mnar", "noise", "impl")) {
+
+  p <- migration_xgb %>%
+    filter(grepl(imp_type, condition)) %>%
+    mutate(severity = ifelse(grepl("severe", condition), "severe", "mild")) %>%
+    ggplot(aes(x = factor(grade), y = factor(clean_grade), fill = share)) +
+    geom_tile(color = "white", linewidth = 0.3) +
+    geom_tile(data = . %>% filter(as.numeric(as.character(grade)) ==
+                                   as.numeric(as.character(clean_grade))),
+              fill = NA, color = "black", linewidth = 0.5) +
+    scale_fill_gradient(low = "white", high = "steelblue",
+                        labels = scales::percent_format()) +
+    facet_grid(severity ~ stage) +
+    scale_x_discrete(drop = FALSE) +
+    scale_y_discrete(drop = FALSE) +
+    labs(title = paste0("Grade Migration: XGBoost — ", toupper(imp_type)),
+         x = "Grade after impairment / preparation",
+         y = "Grade on clean data",
+         fill = "Share") +
+    theme_minimal() +
+    theme(panel.grid = element_blank(),
+          aspect.ratio = 1)
+
+  print(p)
+}
+
+
+```
+
+```{r}
+
+bind_rows(
+  dat_mcar_severe %>% mutate(stage = "impaired (NAs dropped)") %>% filter(!is.na(log_assets)),
+  dat_mcar_severe_prepped %>% mutate(stage = "prepared (Ersatzwert)")
+) %>%
+  ggplot(aes(x = log_assets)) +
+  geom_histogram(bins = 80, fill = "steelblue", colour = "white", linewidth = 0.2) +
+  facet_wrap(~ stage, ncol = 2) +
+  labs(title = "Mass point effect: log_assets under MCAR severe") +
+  theme_minimal()
+
+
+```
+
+

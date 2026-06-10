@@ -142,7 +142,7 @@ Different kinds of implausibility:
 - Remaining extremes capped at clean-data percentile cutoffs (5% tail, one or two-sided depending on the variable)
 
 **Step 3: Imputation** (side quest 2: comparison across methods)
-- Single regression (approach at RR)
+- Ersatzwert imputation (default practitioner procedure)
 - Median imputation
 - MICE
 - Listwise deletion (implicit part of logistic regression)
@@ -205,13 +205,23 @@ PDs to firms that actually default, and are the PDs accurate?)
 - Calibration plot based on Moody's grade buckets
 
 
-Overarching themes on first run:
-- XGboost is more robust than GLM in absolute terms, but GLM complete case analysis can actually work really well for missingness conditions
-- Preparation helps calibration, but often hurts discrimination
-- Most dangerous impairments are noise and implausible values: Gini degrades but O/E stays flat -- looks ok on the surface but secretly loses the rank-ordering
-- MNAR is where regression imputation is most theoretically inappropriate and where distortion is most visible
+**Key findings:**
+
+- Standard practitioner data preparation fails to improve discrimination and 
+actively degrades GLM calibration through the Ersatzwert mass-point effect — 
+the intuition that cleaner inputs produce better outputs does not hold here.
+
+- XGBoost with preparation always gets pushed into the riskier direction:
+underestimating risk with poor ranking
+
+- GLM with preparation at least leans towards the safer direction -- overestimate
+risk with better ability to ID risk
+
 
 
 ---
 
 ## Stage 6: Monte Carlo 
+
+
+- X repetitions of X firms each
