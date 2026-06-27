@@ -562,7 +562,7 @@ bind_rows(
   dat_mcar_severe_prepped %>% mutate(stage = "prepared (Ersatzwert)")
 ) %>%
   ggplot(aes(x = log_assets)) +
-  geom_histogram(bins = 80, fill = "steelblue", colour = "white", linewidth = 0.2) +
+  geom_histogram(bins = 80, fill = "steelblue", color = "white", linewidth = 0.2) +
   facet_wrap(~ stage, ncol = 2) +
   labs(title = "Mass point effect: log_assets under MCAR severe") +
   theme_minimal()
@@ -570,4 +570,21 @@ bind_rows(
 
 ```
 
+
+```{r}
+
+
+bind_rows(
+  dat_impl_severe %>% mutate(stage = "impaired") %>% filter(!is.na(log_assets)),
+  dat_impl_severe_prepped %>% mutate(stage = "prepared (Ersatzwert)")
+) %>%
+  ggplot(aes(x = log_assets)) +
+  geom_histogram(bins = 35, fill = "steelblue", color = "white", linewidth = 0.2) +
+  facet_wrap(~ stage, ncol = 2) +
+  labs(title = "Mass point effect: log_assets under Implausible severe") +
+  theme_minimal()
+
+
+
+```
 

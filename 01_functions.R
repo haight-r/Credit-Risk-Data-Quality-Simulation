@@ -1364,6 +1364,81 @@ evaluate_models <- function(models,
 
 
 # ============================================================================
+# STAGE 5b: UNIVARIATE DISCRIMINATORY POWER (Trennschärfe)
+# ============================================================================
+#
+# Per-variable AUC: how well does each predictor, alone, separate defaulters
+# from non-defaulters? This is RR's standard pre-modeling diagnostic
+#
+# Computed at three pipeline stages:
+#   - clean:          baseline univariate signal strength
+#   - impaired:       post-corruption / pre-imputation (complete cases only)
+#   - prepared:       post-imputation (full dataset)
+#
+# The before/after imputation comparison isolates what the repair workflow
+# does to each variable's individual signal — even when the overall model
+# Gini is unchanged because other variables compensate.
+#
+# Uses rank-based AUC (O(n log n)) for speed inside the MC loop.
+# ============================================================================
+
+compute_univariate_auc <- function(dat,
+                                    response = "default",
+                                    vars = c("log_assets", "debt_to_equity",
+                                             "interest_cov", "firm_age",
+                                             "crefo")) {
+
+  actual <- dat[[response]]
+
+  # Rank-based AUC (same as fast_auc in MC runner)
+  rank_auc <- function(pred, actual) {
+    n1 <- sum(actual == 1)
+    n0 <- sum(actual == 0)
+    if (n1 == 0 || n0 == 0) return(NA_real_)
+    r <- rank(pred)
+    U <- sum(r[actual == 1]) - n1 * (n1 + 1) / 2
+    U / (n1 * n0)
+  }
+
+  out <- data.frame(
+    variable   = vars,
+    auc        = NA_real_,
+    gini       = NA_real_,
+    n_complete = NA_integer_,
+    n_missing  = NA_integer_,
+    stringsAsFactors = FALSE
+  )
+
+  for (i in seq_along(vars)) {
+    v <- vars[i]
+    if (!(v %in% names(dat))) next
+
+    x       <- dat[[v]]
+    cc      <- !is.na(x)        # complete cases for this variable
+    n_cc    <- sum(cc)
+    n_miss  <- sum(!cc)
+
+    out$n_complete[i] <- n_cc
+    out$n_missing[i]  <- n_miss
+
+    if (n_cc < 20) next   # too few cases for meaningful AUC
+
+    auc_raw <- rank_auc(x[cc], actual[cc])
+
+    # Flip AUC if < 0.5 — for variables with protective direction
+    # (higher value = lower default risk), raw AUC can be < 0.5.
+    # We want discriminatory power regardless of direction.
+    auc_val <- max(auc_raw, 1 - auc_raw)
+
+    out$auc[i]  <- auc_val
+    out$gini[i] <- 2 * auc_val - 1
+  }
+
+  out
+}
+
+
+# ============================================================================
 # Feature Reliability Score (FRS) -- per-feature data quality diagnostic
 # ============================================================================
 #

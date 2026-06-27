@@ -134,7 +134,7 @@ historical default rates in those sectors per practitioner datasets.
 
 ### Data Generating Process DAG
 
-**1) Simple DAG for the five indicator variables)**
+**1) Simple DAG for the five indicator variables**
 
 Color code: 
 
@@ -192,11 +192,9 @@ digraph DGP_simple {
 
 **2) Entire DGP**
 
-Phase one: (left) variable and dependency declaration 
-
-Phase two: (right) panel drift
-
-Phase three: linear predictor combining both of the above phases 
+- Phase one: (left) variable and dependency declaration 
+- Phase two: (right) panel drift
+- Phase three: linear predictor combining both of the above phases 
 
 ```{r}
 # ── Detailed DAG of the Data Generating Process ─────────────────────────────
@@ -306,13 +304,14 @@ pd_formula <- default ~ log_assets_z + debt_to_equity_z + interest_cov_z +
 
 Fitting a logistic regression on clean data: 
 
-- even though we know the DGP and all that influence it, basic GLM is unable 
+- Even though we know the DGP and all that influence it, basic GLM is unable 
 to perfectly recover it -- even on non-impaired data!
-- this is a finding in itself: though regulators love the logistic model for 
+- This is a finding in itself: though regulators love the logistic model for 
 its transparency, it is a little too simple for the complications of panel 
 data. We are breaking the assumption of independence and add heterogeneity 
 with firm trajectories, setting off the estimated betas
-- Beta recovery on the clean data does not improve with larger sample sizes
+- Beta recovery on the clean data does not improve with larger sample sizes,
+or accounting for random effects for time series (glmnet)
 
 
 
@@ -337,7 +336,8 @@ print(round(recovery, 4))
 ```
 
 Sidequest:
-## Feature reliability score on clean data
+
+## Introducing Feature Reliability Score on clean data
 
 **Feature Reliability Score (FRS)** testing from Igl & Gruber's Handbuch
 Datenqualität (2025). A customizable data quality measure per indicator
@@ -349,6 +349,7 @@ Because this is on clean data, we should expect the scores to be near 1
 (perfect quality). We get marked down slightly in Plausibility and
 Outliers because the FRS function is always looking to penalize data at the
 tails (it does not take into account that we are in the perfect world).
+
 Crefo has different expectations since it is purchased from an external data
 provider and by default bounded at [100, 600] so it receives the only 
 "perfect score".
@@ -377,7 +378,9 @@ other value in the dataset — no row-level or variable-level dependence.
 This is implemented via independent rbinom draws per variable, producing
 a random scatter of missingness across the data
 
-Variables included: financial ratios and firm_age. Sector and Crefo are
+Variables included: financial ratios and firm_age. 
+
+Sector and Crefo are
 excluded: sector is a simple categorical entry unlikely to be missing;
 Crefo missingness is modelled separately under the MAR condition.
 
@@ -452,8 +455,9 @@ reflects real reporting behavior — a firm that stops disclosing bad
 financials does not voluntarily resume disclosure.
 
 Intercepts tuned to achieve overall missing rates comparable to MCAR/MAR
-after persistence propagation: Mild: ~8% of firm-years, Severe: ~28%
-of firm-years
+after persistence propagation: 
+Mild: ~8% of firm-years, 
+Severe: ~28%of firm-years
 
 Note: because persistence amplifies the initial trigger rate, the
 per-year trigger probability is set lower than the target.
@@ -477,7 +481,7 @@ dat_mnar_severe <- impair_mnar(dat, severity = "severe")
 Measurement noise: Gaussian noise added to continuous financial
 predictors, creating a less-precise dataset.
 
-Only continuous predictors are corrupted (except firm_age).
+Only continuous predictors are corrupted (except firm_age and crefo).
 
 Severity defined as % of each variable's clean SD 
 
@@ -509,13 +513,13 @@ not produce uniform error patterns.
 
 Three error types per variable: 
 
-1. Domain-invalid: clearly impossible
+1. **Domain-invalid**: clearly impossible
 values (negative age, etc.) 
 
-2. Extreme outlier: technically possible but
+2. **Extreme outlier**: technically possible but
 far outside normal range 
 
-3. Subtle: within plausible range but wrong
+3. **Subtle**: within plausible range but wrong
 (decimal shifts, swaps [numerator / denominator, or age in months not
 years])
 
@@ -536,7 +540,7 @@ dat_impl_severe <- impair_implausible(dat, result$scaling, severity = "severe")
 
 ------------------------------------------------------------------------
 
-Sidequest FRS part 2:
+**Sidequest FRS part 2:**
 
 ### Feature reliability score on impaired data
 
@@ -640,18 +644,23 @@ Last step before modeling:
    4. Recompute _z columns using clean scaling parameters
 
  The method argument controls the imputation strategy:
-   "ersatzwert" — RR univariate Ersatzwert imputation (default).
+
+   **"ersatzwert"** — RR univariate Ersatzwert imputation (default).
               For each variable independently: fits a univariate logistic
               regression (default ~ x) on non-missing cases, computes the
               observed default rate among missing cases (AR_MV), and solves
               for the x-value that would produce that default rate:
+ 
               Ersatzwert = (logit(AR_MV) - β₀) / β₁
+
               All missing rows receive the same replacement value per variable.
               Implements the RR development-phase imputation methodology.
-   "median" — univariate median imputation (PD-neutral baseline;
+
+   **"median"** — univariate median imputation (PD-neutral baseline;
               maps to ~z=0 after standardisation, adding approximately
               zero to the linear predictor).
-   "mice"  — multivariate imputation by chained equations (van Buuren
+
+   **"mice"**  — multivariate imputation by chained equations (van Buuren
               & Groothuis-Oudshoorn, 2011). Uses predictive mean matching
               (pmm) as the default method, which preserves the distribution
               shape and avoids impossible values. Single imputation (m=1)
@@ -721,7 +730,8 @@ using MICE over Ersatzwert or Median after looking at beta recovery
 - 
 
 
-**Sidequest 2: can FRS pick up on data quality issues before modeling**
+**Sidequest 2: can FRS pick up on data quality issues before modeling?**
+
 Comparing FRS across imputation methods for
 missingness
 
@@ -736,7 +746,7 @@ frs_compare
 
 ```
 
-And visualizations
+And **visualizations: FRS Breakdown**
 
 ```{r}
 
@@ -801,7 +811,7 @@ ggplot(frs_comp_summary[frs_comp_summary$severity == "severe", ],
 
 ```
 
-FRS visualizations per variable
+**FRS visualizations per variable:**
 
 ```{r}
 # Filter to severe + drop the aggregate MEAN row
@@ -835,6 +845,8 @@ ggplot(frs_var_severe,
     panel.spacing = unit(1, "lines")
   )
 ```
+
+**FRS Deep Dive**
 
 ```{r}
 # Pick whichever impairment type you want to drill into
@@ -1328,8 +1340,8 @@ sampling variability that a train/test split would otherwise supply.
     above 1.0 means underprediction. This is the simplest regulatory
     calibration check.
 
-**Main focus: Gini Coefficient (discrimination), O/E (overall calibration),
-secondarily Brier Score (discrimination + calibration)**
+Main focus: Gini Coefficient (discrimination), O/E (overall calibration),
+secondarily Brier Score (discrimination + calibration)
 
 Running it for both models -- every model scores on the same clean data:
 
@@ -1408,14 +1420,14 @@ ggplot(plot_metrics, aes(x = condition, y = gini,
 
 **Notes on Gini / Discrimination**:
 
-• XGBoost clean baseline (~0.675) meaningfully outperforms GLM (~0.60) due to its ability to capture nonlinearities in the DGP
-• GLM is surprisingly robust across missingness conditions — complete-case deletion and RR's Ersatzwert imputation preserves clean relationships on smaller but undistorted data
-• Preparation does not ever seem to help discrimination -- always on the same level as the default NA handling
-• Severity gradient: mild-to-severe is a bigger step down for XGBoost than GLM
-• MCAR missingness is a problem for XGB but not GLM. Because the missingness carries no signal and XG is looking to split based on signal. Preparation doesn't help in either case because there is nothing to fix in the relationship
-• MNAR missingness: both models are able to rank firms in this case, I guess because decaying firms have other signs other than missing interest_cov. XGB native NA handling might have even learned that having missing "interest_cov" is a risk indicator
-• Noise is where GLM shows more robustness than XGBoost relative to their own baselines, but XGBoost at its worst still beats GLM’s clean ceiling. In GLM, noise washes out so the signal isn't that far away. But XGB chases some of the noise damage / integrates into the trees
-• Implausible values = biggest challenge for discrimination in GLM. Mild implausible with preparation can somehow solve it (winsorizing off the extreme values), but severe implausible is too much to ignore (especially when they can't get caught by the pipeline)
+- XGBoost clean baseline (~0.675) meaningfully outperforms GLM (~0.60) due to its ability to capture nonlinearities in the DGP
+- GLM is surprisingly robust across missingness conditions — complete-case deletion and RR's Ersatzwert imputation preserves clean relationships on smaller but undistorted data
+- Preparation does not ever seem to help discrimination -- always on the same level as the default NA handling
+- Severity gradient: mild-to-severe is a bigger step down for XGBoost than GLM
+- MCAR missingness is a problem for XGB but not GLM. Because the missingness carries no signal and XG is looking to split based on signal. Preparation doesn't help in either case because there is nothing to fix in the relationship
+- MNAR missingness: both models are able to rank firms in this case, I guess because decaying firms have other signs other than missing interest_cov. XGB native NA handling might have even learned that having missing "interest_cov" is a risk indicator
+- Noise is where GLM shows more robustness than XGBoost relative to their own baselines, but XGBoost at its worst still beats GLM’s clean ceiling. In GLM, noise washes out so the signal isn't that far away. But XGB chases some of the noise damage / integrates into the trees
+- Implausible values = biggest challenge for discrimination in GLM. Mild implausible with preparation can somehow solve it (winsorizing off the extreme values), but severe implausible is too much to ignore (especially when they can't get caught by the pipeline)
 
 
 
@@ -1460,15 +1472,15 @@ ggplot(plot_metrics, aes(x = condition, y = brier,
 ```
 
 
-**Brier score** (composite, discrimination + calibration combined)
+**Brier score** (composite, individual level discrimination + calibration)
 
-	• XGBoost again has the better clean baseline. Starts lower and stays lower.
-	• Preparation hurts Brier score. Prepared data has the "mass point" issue that shrinks the variance, then GLM overcompensates / higher predicted PDs than expected. For XGB: mass point downgrades its information set. Replaces a better mechanism with a less-precise one
-		○ Therefore it's almost always higher than the impaired data in all cases)
-		○ XGBoost NA handling for MCAR / MNAR severe,noise also distorts the trees. 
-	• GLM complete-case analysis holds calibration well until noise severe and implausible conditions, where it jumps sharply.  Impl Mild and Severe stay at the same level.
-	• MAR is the most stable condition for both models, consistent with the mechanism (missingness on crefo is independent of default risk conditional on observables)
-Implausible mild GLM: the only case where preparation helps (winsorizing), but we can't get rid of the distorted data not caught by preparation. 
+- XGBoost again has the better clean baseline. Starts lower and stays lower.
+- Preparation hurts Brier score. Prepared data has the "mass point" issue that shrinks the variance, then GLM overcompensates / higher predicted PDs than expected. For XGB: mass point downgrades its information set. Replaces a better mechanism with a less-precise one
+  - Therefore it's almost always higher than the impaired data in all cases)
+  - XGBoost NA handling for MCAR / MNAR severe,noise also distorts the trees. 
+- GLM complete-case analysis holds calibration well until noise severe and implausible conditions, where it jumps sharply.  Impl Mild and Severe stay at the same level.
+- MAR is the most stable condition for both models, consistent with the mechanism (missingness on crefo is independent of default risk conditional on observables)
+- Implausible mild GLM: the only case where preparation helps (winsorizing), but we can't get rid of the distorted data not caught by preparation. 
 
 
 
@@ -1499,19 +1511,20 @@ ggplot(plot_metrics, aes(x = condition, y = oe_ratio,
 
 ```
 
-**O/E ratio** (pure calibration):
+**O/E ratio** (pure calibration on overall portfolio level):
 
 Note that this is a ratio of totals, and errors can cancel out in aggregate (doesn't look as dramatic as Brier)
 
 Can diverge from Brier when prediction errors are unsystematic
 
-	• Ersatzwert with XGBoost leads to a loss of precision that shows up in Brier (which is more about grading individual predictions) but is hidden in O/E (aggregate measure)
-	• Ersatzwert with GLM  hurts calibration due to the mass-point effect, though at least being under the 1.0 line is safer from a regulatory perspective
-	• MNAR Severe: an interesting story
-		○ GLM MNAR without preparation underpredicts risk (dangerous). MNAR deletes interest_cov for distressed firms, and complete case analysis deletes all of these firms, so it thinks the risk isn’t there
-		○ Ersatzwert GLM preparation flips it: replaces the missing interest_cov with one value that represents all the distressed firms, therefore overstating the risk. Trading one miscalibration for another
-		○ XGBoost lands on the higher side regardless of preparation. Can't overcome the bias either or learn from the missingness (can overcome MAR perfectly but can't figure this out)
-	• Implausible and Noise doesn't look too far from the 1.0, but Gini showed meaningful loss in discrimination (dangerous because it might fly under the radar)
+- Ersatzwert with XGBoost leads to a loss of precision that shows up in Brier (which is more about grading individual predictions) but is hidden in O/E (aggregate measure)
+  - Ersatzwert with GLM  hurts calibration due to the mass-point effect, though at least being under the 1.0 line is safer from a regulatory perspective
+- MNAR Severe: an interesting story
+  - GLM MNAR without preparation underpredicts risk (dangerous). MNAR deletes interest_cov for distressed firms, and complete case analysis deletes all of these firms, so it thinks the risk isn’t there
+  - Ersatzwert GLM preparation flips it: replaces the missing interest_cov with one value that represents all the distressed firms, therefore overstating the risk. Trading one miscalibration for another
+    -  XGBoost lands on the higher side regardless of preparation. Can't overcome the bias either or learn from the missingness (can overcome MAR perfectly but can't figure this out)
+- Implausible and Noise doesn't look too far from the 1.0, but Gini showed meaningful loss in discrimination (dangerous because it might fly under the radar)
+
 Implausible mild vs. severe for prepared data: under mild impairment, the winsorizing thresholds are tighter and it clips more into legit variation in the data --> distorts it
 
 
@@ -1687,7 +1700,7 @@ for (mt in c("glm", "xgboost")) {
 ```
 
 
-Calibration plot (grade-level calibration)
+**Calibration plot (grade-level calibration): **
 
 - GLM underestimates the risk on the safe firms (low rating) but overestimates on the risky firms (low rating)
 - XGBoost does the opposite (arguably worse), trees are potentially overfit?
@@ -1971,8 +1984,6 @@ ggplot(
 
 ```{r}
 # ── Quadrant plot: Gini (x) vs O/E (y) ──────────────────────────
-
-
 
 # ── 1. Get clean baselines per model ─────────────────────────────
 clean_ref <- summary_table %>%

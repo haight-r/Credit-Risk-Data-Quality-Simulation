@@ -19,19 +19,20 @@ mc <- readRDS("mc_results_final.rds")
 dir.create("tables",  showWarnings = FALSE)
 dir.create("figures", showWarnings = FALSE)
 
-cat(sprintf("Loaded MC results: %d iterations, %d metric rows, %d coef rows, %d importance rows\n",
+cat(sprintf("Loaded MC results: %d iterations, %d metric rows, %d coef rows, %d importance rows, %d univariate rows\n",
             mc$config$N_MC,
             nrow(mc$metrics),
             nrow(mc$coefs),
-            nrow(mc$importance)))
+            nrow(mc$importance),
+            nrow(mc$univariate)))
 
 
 # ============================================================================
-# COLOUR PALETTE & THEME
+# COLOR PALETTE & THEME
 # ============================================================================
-# Consistent across all figures. One colour per impairment type.
+# Consistent across all figures. One color per impairment type.
 
-type_colours <- c(
+type_colors <- c(
   clean       = "#2C3E50",
   MCAR        = "#3498DB",
   MAR         = "#2ECC71",
@@ -40,7 +41,7 @@ type_colours <- c(
   implausible = "#9B59B6"
 )
 
-stage_colours <- c(
+stage_colors <- c(
   clean    = "#2C3E50",
   impaired = "#E74C3C",
   prepared = "#2ECC71"
@@ -228,9 +229,9 @@ for (mt in c("glm", "xgboost")) {
     plot_data_gini %>% filter(model_type == mt),
     aes(x = stage, y = gini, fill = stage)
   ) +
-    geom_hline(yintercept = clean_gini_mean, linetype = "dotted", colour = "grey40") +
+    geom_hline(yintercept = clean_gini_mean, linetype = "dotted", color = "grey40") +
     geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
-    scale_fill_manual(values = stage_colours) +
+    scale_fill_manual(values = stage_colors) +
     facet_wrap(~ panel, scales = "free_x", nrow = 2) +
     labs(
       title = sprintf("Gini coefficient across MC iterations (%s)", toupper(mt)),
@@ -257,7 +258,7 @@ for (mt in c("glm", "xgboost")) {
     aes(x = stage, y = brier, fill = stage)
   ) +
     geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
-    scale_fill_manual(values = stage_colours) +
+    scale_fill_manual(values = stage_colors) +
     facet_wrap(~ panel, scales = "free_x", nrow = 2) +
     labs(
       title = sprintf("Brier score across MC iterations (%s)", toupper(mt)),
@@ -284,8 +285,8 @@ for (mt in c("glm", "xgboost")) {
     aes(x = stage, y = oe_ratio, fill = stage)
   ) +
     geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
-    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey40") +
-    scale_fill_manual(values = stage_colours) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "grey40") +
+    scale_fill_manual(values = stage_colors) +
     facet_wrap(~ panel, scales = "free_x", nrow = 2) +
     labs(
       title = sprintf("O/E ratio across MC iterations (%s)", toupper(mt)),
@@ -319,7 +320,7 @@ heatmap_data <- mc$metrics %>%
   )
 
 p <- ggplot(heatmap_data, aes(x = col_label, y = row_label, fill = delta_gini)) +
-  geom_tile(colour = "white", linewidth = 0.5) +
+  geom_tile(color = "white", linewidth = 0.5) +
   geom_text(aes(label = sprintf("%.4f", delta_gini)), size = 3) +
   scale_fill_gradient2(
     low = "#E74C3C", mid = "white", high = "#2ECC71",
@@ -353,7 +354,7 @@ heatmap_oe <- mc$metrics %>%
   )
 
 p <- ggplot(heatmap_oe, aes(x = col_label, y = row_label, fill = delta_oe)) +
-  geom_tile(colour = "white", linewidth = 0.5) +
+  geom_tile(color = "white", linewidth = 0.5) +
   geom_text(aes(label = sprintf("%.4f", delta_oe)), size = 3) +
   scale_fill_gradient2(
     low = "#E74C3C", mid = "white", high = "#2ECC71",
@@ -397,12 +398,12 @@ key_terms <- c("log_assets", "debt_to_equity", "interest_cov",
 
 p <- ggplot(
   coef_summary %>% filter(term %in% key_terms),
-  aes(x = stage, y = est_mean, colour = stage)
+  aes(x = stage, y = est_mean, color = stage)
 ) +
   geom_pointrange(aes(ymin = est_lo, ymax = est_hi), size = 0.4) +
   geom_hline(aes(yintercept = true_val), linetype = "dashed",
-             colour = "grey50", linewidth = 0.3) +
-  scale_colour_manual(values = stage_colours) +
+             color = "grey50", linewidth = 0.3) +
+  scale_color_manual(values = stage_colors) +
   facet_grid(term ~ panel, scales = "free_y") +
   labs(
     title = "GLM coefficient recovery across MC iterations",
@@ -438,7 +439,7 @@ p <- ggplot(
   aes(x = Feature, y = gain_mean, fill = stage)
 ) +
   geom_col(position = position_dodge(width = 0.7), width = 0.6) +
-  scale_fill_manual(values = stage_colours) +
+  scale_fill_manual(values = stage_colors) +
   facet_wrap(~ panel, nrow = 2) +
   labs(
     title = "XGBoost feature importance (Gain) across MC iterations",
@@ -478,11 +479,11 @@ model_comp <- inner_join(glm_wide, xgb_wide,
 
 p <- ggplot(
   model_comp %>% filter(stage != "clean"),
-  aes(x = gini_glm, y = gini_xgb, colour = type, shape = severity)
+  aes(x = gini_glm, y = gini_xgb, color = type, shape = severity)
 ) +
   geom_point(alpha = 0.3, size = 1) +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey50") +
-  scale_colour_manual(values = type_colours) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+  scale_color_manual(values = type_colors) +
   scale_shape_manual(values = severity_shapes) +
   facet_wrap(~ stage) +
   labs(
@@ -494,6 +495,161 @@ p <- ggplot(
 
 ggsave("figures/fig8_glm_vs_xgboost_gini.pdf", p, width = 10, height = 5)
 cat("Saved: figures/fig8_glm_vs_xgboost_gini.pdf\n")
+
+
+# ============================================================================
+# TABLE 7: UNIVARIATE DISCRIMINATORY POWER (Trennschärfe)
+# ============================================================================
+# Mean univariate AUC per variable × impairment type × severity × stage,
+# across MC iterations. Three stages: clean, impaired (pre-imputation),
+# prepared (post-imputation).
+
+tbl_univariate <- mc$univariate %>%
+  group_by(variable, type, severity, stage) %>%
+  summarise(
+    auc_mean     = mean(auc, na.rm = TRUE),
+    auc_sd       = sd(auc, na.rm = TRUE),
+    gini_mean    = mean(gini, na.rm = TRUE),
+    gini_sd      = sd(gini, na.rm = TRUE),
+    n_complete   = mean(n_complete, na.rm = TRUE),
+    n_missing    = mean(n_missing, na.rm = TRUE),
+    .groups      = "drop"
+  ) %>%
+  arrange(variable, type, severity, match(stage, c("clean", "impaired", "prepared")))
+
+write.csv(tbl_univariate, "tables/table7_univariate_auc.csv", row.names = FALSE)
+cat("Saved: tables/table7_univariate_auc.csv\n")
+
+
+# ============================================================================
+# TABLE 8: UNIVARIATE AUC DELTA — IMPUTATION EFFECT PER VARIABLE
+# ============================================================================
+# Per-iteration paired comparison: how does imputation change each variable's
+# individual discriminatory power?
+
+uni_impaired <- mc$univariate %>%
+  filter(stage == "impaired") %>%
+  select(iteration, variable, condition, type, severity,
+         auc_imp = auc, n_complete_imp = n_complete)
+
+uni_prepared <- mc$univariate %>%
+  filter(stage == "prepared") %>%
+  select(iteration, variable, condition,
+         auc_prep = auc, n_complete_prep = n_complete)
+
+uni_clean <- mc$univariate %>%
+  filter(stage == "clean") %>%
+  select(iteration, variable, auc_clean = auc)
+
+tbl_uni_delta <- uni_impaired %>%
+  inner_join(uni_prepared, by = c("iteration", "variable", "condition")) %>%
+  inner_join(uni_clean, by = c("iteration", "variable")) %>%
+  mutate(
+    delta_imp_from_clean  = auc_imp  - auc_clean,   # corruption damage
+    delta_prep_from_imp   = auc_prep - auc_imp,      # imputation effect
+    delta_prep_from_clean = auc_prep - auc_clean      # net effect
+  ) %>%
+  group_by(variable, type, severity) %>%
+  summarise(
+    damage_mean   = mean(delta_imp_from_clean, na.rm = TRUE),
+    damage_sd     = sd(delta_imp_from_clean, na.rm = TRUE),
+    repair_mean   = mean(delta_prep_from_imp, na.rm = TRUE),
+    repair_sd     = sd(delta_prep_from_imp, na.rm = TRUE),
+    net_mean      = mean(delta_prep_from_clean, na.rm = TRUE),
+    net_sd        = sd(delta_prep_from_clean, na.rm = TRUE),
+    .groups       = "drop"
+  ) %>%
+  arrange(variable, type, severity)
+
+write.csv(tbl_uni_delta, "tables/table8_univariate_delta.csv", row.names = FALSE)
+cat("Saved: tables/table8_univariate_delta.csv\n")
+
+
+# ============================================================================
+# FIGURE 9: UNIVARIATE AUC — DUMBBELL PLOT (before/after imputation)
+# ============================================================================
+# For each variable × condition: connected dots showing impaired → prepared AUC.
+# Clean baseline shown as vertical reference line.
+
+uni_summary <- mc$univariate %>%
+  filter(stage %in% c("impaired", "prepared")) %>%
+  group_by(variable, condition, type, severity, stage) %>%
+  summarise(auc_mean = mean(auc, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = stage, values_from = auc_mean,
+              names_prefix = "auc_")
+
+clean_uni_baseline <- mc$univariate %>%
+  filter(stage == "clean") %>%
+  group_by(variable) %>%
+  summarise(auc_clean = mean(auc, na.rm = TRUE), .groups = "drop")
+
+uni_summary <- uni_summary %>%
+  left_join(clean_uni_baseline, by = "variable") %>%
+  mutate(
+    panel = paste0(type, " — ", severity),
+    # Color the segment: green if imputation helped, red if it hurt
+    helped = auc_prepared >= auc_impaired
+  )
+
+p <- ggplot(uni_summary, aes(y = variable)) +
+  # Clean baseline as vertical reference
+  geom_point(aes(x = auc_clean), shape = 124, size = 4, color = "grey40") +
+  # Segment connecting impaired → prepared
+  geom_segment(aes(x = auc_impaired, xend = auc_prepared,
+                   yend = variable, color = helped),
+               linewidth = 0.7, show.legend = FALSE) +
+  # Impaired dot (red)
+  geom_point(aes(x = auc_impaired), color = "#E74C3C", size = 2) +
+  # Prepared dot (green)
+  geom_point(aes(x = auc_prepared), color = "#2ECC71", size = 2) +
+  scale_color_manual(values = c("TRUE" = "#2ECC71", "FALSE" = "#E74C3C")) +
+  facet_wrap(~ panel, ncol = 2) +
+  labs(
+    title = "Univariate discriminatory power: before vs after imputation",
+    subtitle = "Red dot = pre-imputation (CCA), green dot = post-imputation. Grey bar = clean baseline.",
+    x = "Univariate AUC", y = NULL
+  ) +
+  theme_thesis
+
+ggsave("figures/fig9_univariate_auc_dumbbell.pdf", p, width = 12, height = 10)
+cat("Saved: figures/fig9_univariate_auc_dumbbell.pdf\n")
+
+
+# ============================================================================
+# FIGURE 10: UNIVARIATE AUC HEATMAP — NET CHANGE FROM CLEAN
+# ============================================================================
+# Variables as rows, conditions as columns, color = mean delta AUC from clean.
+
+uni_heatmap <- mc$univariate %>%
+  filter(stage == "prepared") %>%
+  inner_join(
+    mc$univariate %>%
+      filter(stage == "clean") %>%
+      select(iteration, variable, auc_clean = auc),
+    by = c("iteration", "variable")
+  ) %>%
+  mutate(delta_auc = auc - auc_clean) %>%
+  group_by(variable, type, severity) %>%
+  summarise(delta_auc = mean(delta_auc, na.rm = TRUE), .groups = "drop") %>%
+  mutate(col_label = paste(type, severity))
+
+p <- ggplot(uni_heatmap, aes(x = col_label, y = variable, fill = delta_auc)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.4f", delta_auc)), size = 3) +
+  scale_fill_gradient2(
+    low = "#E74C3C", mid = "white", high = "#2ECC71",
+    midpoint = 0, name = "Mean\n\u0394 AUC"
+  ) +
+  labs(
+    title = "Net univariate AUC change after full preparation pipeline",
+    subtitle = "Negative = variable lost discriminatory power vs clean baseline",
+    x = NULL, y = NULL
+  ) +
+  theme_thesis +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+ggsave("figures/fig10_univariate_auc_heatmap.pdf", p, width = 10, height = 5)
+cat("Saved: figures/fig10_univariate_auc_heatmap.pdf\n")
 
 
 # ============================================================================
@@ -557,6 +713,8 @@ cat("  tables/table3_ersatzwert_recovery.csv\n")
 cat("  tables/table4_coefficient_recovery.csv\n")
 cat("  tables/table5_xgboost_importance.csv\n")
 cat("  tables/table6_paired_tests.csv\n")
+cat("  tables/table7_univariate_auc.csv\n")
+cat("  tables/table8_univariate_delta.csv\n")
 cat("\nFigures saved:\n")
 cat("  figures/fig1_gini_boxplots_glm.pdf     + xgboost\n")
 cat("  figures/fig2_brier_boxplots_glm.pdf    + xgboost\n")
@@ -566,4 +724,6 @@ cat("  figures/fig5_oe_degradation_heatmap.pdf\n")
 cat("  figures/fig6_coefficient_recovery.pdf\n")
 cat("  figures/fig7_xgboost_importance.pdf\n")
 cat("  figures/fig8_glm_vs_xgboost_gini.pdf\n")
+cat("  figures/fig9_univariate_auc_dumbbell.pdf\n")
+cat("  figures/fig10_univariate_auc_heatmap.pdf\n")
 cat("\nDone.\n")

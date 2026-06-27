@@ -187,14 +187,53 @@ run_one_iteration <- function(seed) {
   glm_metrics <- evaluate_models_fast(glm_res$models, dat, pd_formula, "glm")
   xgb_metrics <- evaluate_models_fast(xgb_res$models, dat, pd_formula, "xgboost")
 
+  # Stage 5b: Univariate discriminatory power (Trennschärfe)
+  # Three snapshots: clean baseline, post-corruption, post-imputation
+  uni_rows <- vector("list", 1 + 2 * length(impaired_list))
+  idx <- 1L
+
+  # Clean baseline
+  u <- compute_univariate_auc(dat)
+  u$condition <- "clean"
+  u$type      <- "clean"
+  u$severity  <- "none"
+  u$stage     <- "clean"
+  uni_rows[[idx]] <- u; idx <- idx + 1L
+
+  for (nm in names(impaired_list)) {
+    meta <- attr(impaired_list[[nm]], "impairment")
+    imp_type <- if (!is.null(meta$type)) meta$type else nm
+    imp_sev  <- if (!is.null(meta$severity)) meta$severity else "unknown"
+
+    # Post-corruption / pre-imputation (complete cases only — NAs excluded by rank_auc)
+    u_imp <- compute_univariate_auc(impaired_list[[nm]])
+    u_imp$condition <- nm
+    u_imp$type      <- imp_type
+    u_imp$severity  <- imp_sev
+    u_imp$stage     <- "impaired"
+    uni_rows[[idx]] <- u_imp; idx <- idx + 1L
+
+    # Post-imputation
+    u_prep <- compute_univariate_auc(prep_list[[nm]])
+    u_prep$condition <- nm
+    u_prep$type      <- imp_type
+    u_prep$severity  <- imp_sev
+    u_prep$stage     <- "prepared"
+    uni_rows[[idx]] <- u_prep; idx <- idx + 1L
+  }
+
+  univariate_auc <- do.call(rbind, uni_rows)
+  rownames(univariate_auc) <- NULL
+
   # Return numeric summaries only — no model objects (memory)
   list(
-    seed          = seed,
-    n_obs         = nrow(dat),
-    default_rate  = mean(dat$default),
-    metrics       = rbind(glm_metrics, xgb_metrics),
-    coef_recovery = glm_res$coef_recovery,
-    importance    = xgb_res$importance
+    seed           = seed,
+    n_obs          = nrow(dat),
+    default_rate   = mean(dat$default),
+    metrics        = rbind(glm_metrics, xgb_metrics),
+    coef_recovery  = glm_res$coef_recovery,
+    importance     = xgb_res$importance,
+    univariate_auc = univariate_auc
   )
 }
 
@@ -228,7 +267,8 @@ for (i in seq_len(N_MC)) {
   error = function(e) {
     cat(sprintf("  [ERROR] iteration %d (seed %d): %s\n", i, mc_seeds[i], e$message))
     list(seed = mc_seeds[i], n_obs = NA, default_rate = NA,
-         metrics = NULL, coef_recovery = NULL, importance = NULL)
+         metrics = NULL, coef_recovery = NULL, importance = NULL,
+         univariate_auc = NULL)
   })
 
   elapsed <- as.numeric(difftime(Sys.time(), iter_t0, units = "secs"))
@@ -295,6 +335,17 @@ all_importance <- do.call(rbind, lapply(seq_along(mc_results), function(i) {
 }))
 rownames(all_importance) <- NULL
 
+# ── Univariate discriminatory power (Trennschärfe) ──
+all_univariate <- do.call(rbind, lapply(seq_along(mc_results), function(i) {
+  ua <- mc_results[[i]]$univariate_auc
+  if (!is.null(ua)) {
+    ua$iteration <- i
+    ua$seed      <- mc_results[[i]]$seed
+  }
+  ua
+}))
+rownames(all_univariate) <- NULL
+
 
 # ============================================================================
 # SAVE
@@ -304,6 +355,7 @@ saveRDS(list(
   metrics    = all_metrics,
   coefs      = all_coefs,
   importance = all_importance,
+  univariate = all_univariate,
   seeds      = mc_seeds,
   config     = list(N_MC = N_MC, N_FIRMS = N_FIRMS,
                     timestamp = Sys.time())
