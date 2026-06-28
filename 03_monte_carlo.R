@@ -19,7 +19,7 @@ library(xgboost)
 # CONFIG
 # ============================================================================
 
-N_MC    <- 10L       # number of Monte Carlo iterations
+N_MC    <- 5000L       # number of Monte Carlo iterations
 N_FIRMS <- 5000L      # firms per iteration
 
 # Where to save results
@@ -253,24 +253,40 @@ cat(sprintf("Final output → %s\n\n", FINAL_OUTPUT))
 
 total_t0 <- Sys.time()
 
-for (i in seq_len(N_MC)) {
+# ── Parallel setup (Windows) ──
+library(parallel)
+n_cores <- 80L
+cl <- makeCluster(n_cores)
 
-  iter_t0 <- Sys.time()
+# Export everything the workers need
+clusterExport(cl, c("run_one_iteration", "mc_seeds", "N_FIRMS"))
 
-  # Suppress the cat() output from all pipeline functions
-  mc_results[[i]] <- tryCatch({
+# Source dependencies on each worker
+clusterEvalQ(cl, {
+  source("01_functions.R")
+  library(xgboost)
+})
+
+cat(sprintf("Running %d iterations across %d cores...\n", N_MC, n_cores))
+total_t0 <- Sys.time()
+
+mc_results <- parLapply(cl, seq_len(N_MC), function(i) {
+  tryCatch({
     invisible(capture.output(
       res <- run_one_iteration(mc_seeds[i])
     ))
     res
-  },
-  error = function(e) {
-    cat(sprintf("  [ERROR] iteration %d (seed %d): %s\n", i, mc_seeds[i], e$message))
+  }, error = function(e) {
     list(seed = mc_seeds[i], n_obs = NA, default_rate = NA,
          metrics = NULL, coef_recovery = NULL, importance = NULL,
          univariate_auc = NULL)
   })
+})
 
+stopCluster(cl)
+
+total_elapsed <- as.numeric(difftime(Sys.time(), total_t0, units = "mins"))
+cat(sprintf("\nAll %d iterations complete in %.1f minutes.\n", N_MC, total_elapsed))
   elapsed <- as.numeric(difftime(Sys.time(), iter_t0, units = "secs"))
 
   # One-line progress: iteration, seed, time, default rate
